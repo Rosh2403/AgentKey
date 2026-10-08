@@ -1,0 +1,28 @@
+{
+  "name": "agentkey",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Agentkey — portable, verifiable agent identity (issue / resolve / verify)",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "tsc -b --pretty false",
+    "test": "pnpm run build && pnpm -r run test",
+    "dev:api": "pnpm --filter @agentkey/api dev",
+    "dev:mcp": "pnpm --filter @agentkey/mcp dev",
+    "clean": "rm -rf packages/*/dist apps/*/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
