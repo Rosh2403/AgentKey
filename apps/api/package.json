@@ -6,15 +6,18 @@
   "exports": {
     "./handlers": {
       "types": "./dist/handlers.d.ts",
-      "import": "./dist/handlers.js"
+      "import": "./dist/handlers.js",
+      "default": "./dist/handlers.js"
     },
     "./store": {
       "types": "./dist/store.d.ts",
-      "import": "./dist/store.js"
+      "import": "./dist/store.js",
+      "default": "./dist/store.js"
     },
     "./issuer": {
       "types": "./dist/issuer.d.ts",
-      "import": "./dist/issuer.js"
+      "import": "./dist/issuer.js",
+      "default": "./dist/issuer.js"
     }
   },
   "scripts": {
