@@ -1,6 +1,6 @@
 /**
  * Hybrid anchoring (locked C): optional on-chain commit interface.
- * Slice-0: local stub only — no production chain deploy.
+ * Slice-1: local stub / hook only — no production chain deploy.
  */
 
 export interface AnchorRequest {
@@ -10,7 +10,7 @@ export interface AnchorRequest {
 
 export interface AnchorResult {
   commitment: string;
-  /** Always false in slice-0 stub. */
+  /** Always false until a real registry RPC is wired. */
   onChain: boolean;
 }
 
@@ -23,6 +23,6 @@ export async function commitAnchor(
   if (!enabled) {
     return { commitment, onChain: false };
   }
-  // Future: call Solidity registry via RPC when configured.
+  // Hook for future Solidity registry via AGENTKEY_REGISTRY_RPC_URL / ADDRESS.
   return { commitment, onChain: false };
 }

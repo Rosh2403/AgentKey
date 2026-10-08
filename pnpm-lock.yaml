@@ -7,10 +7,17 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@agentkey/sdk':
+        specifier: workspace:*
+        version: link:packages/sdk
     devDependencies:
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
+      tsx:
+        specifier: ^4.19.3
+        version: 4.23.15
       typescript:
         specifier: ^5.8.2
         version: 5.9.3
@@ -36,6 +43,9 @@ importers:
 
   apps/mcp:
     dependencies:
+      '@agentkey/api':
+        specifier: workspace:*
+        version: link:../api
       '@agentkey/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -83,6 +93,9 @@ importers:
 
   packages/sdk:
     dependencies:
+      '@agentkey/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@agentkey/protocol':
         specifier: workspace:*
         version: link:../protocol
