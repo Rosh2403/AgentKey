@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/agentkey-core"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Rosh2403/AgentKey"
+rust-version = "1.85"
