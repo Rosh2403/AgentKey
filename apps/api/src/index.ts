@@ -62,7 +62,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     const revokeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/revoke$/);
     if (req.method === "POST" && revokeMatch) {
       const idOrHandle = decodeURIComponent(revokeMatch[1] ?? "");
-      const result = revokeAgentIdentity(idOrHandle);
+      const result = await revokeAgentIdentity(idOrHandle);
       if ("error" in result) {
         sendJson(res, 404, result);
         return;

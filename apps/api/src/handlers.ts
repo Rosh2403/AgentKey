@@ -14,7 +14,7 @@ import {
   verifyProof,
 } from "@agentkey/crypto";
 import { getAgent, putAgent, revokeAgent, type StoredAgent } from "./store.js";
-import { commitAnchor } from "./registry.js";
+import { commitAnchor, revokeAnchor } from "./registry.js";
 import { getIssuerKeys } from "./issuer.js";
 
 function toPublicAgent(agent: StoredAgent): AgentId {
@@ -115,9 +115,17 @@ export function verifyAgent(request: VerifyRequest): VerifyResult {
   }
 }
 
-export function revokeAgentIdentity(
+export async function revokeAgentIdentity(
   idOrHandle: string,
-): AgentId | { error: string } {
+): Promise<AgentId | { error: string }> {
+  const existing = getAgent(idOrHandle);
+  if (!existing) {
+    return { error: "not_found" };
+  }
+  // If this ID was anchored on-chain, revoke the chain record first when configured.
+  if (existing.anchorCommitment) {
+    await revokeAnchor(existing.id);
+  }
   const revoked = revokeAgent(idOrHandle);
   if (!revoked) {
     return { error: "not_found" };

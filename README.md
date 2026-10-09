@@ -16,6 +16,10 @@ Verify always returns a typed answer: `valid` | `invalid` | `unknown` | `revoked
 
 | Concept | Meaning |
 | --- | --- |
+| Issuer model | **A — Single root issuer** |
+| Anchoring | **C — Hybrid** (off-chain default + optional on-chain commit; see `contracts/`) |
+| ID visibility | **C — Dual** (public handle + private subject) |
+| Language | **TypeScript** end-to-end now; Rust/Go protocol core later; Solidity registry only when needed |
 | **Agent ID** | Globally unique ID bound to a public key (or key set) and optional metadata |
 | **Subject** | Agent (or controller) that holds private material and can prove control |
 | **Verifier** | Relying party asking “is this agent X?” and expecting a typed answer |
@@ -46,6 +50,7 @@ packages/
   protocol/            # Agent ID types, canonical messages, verify result enum
   sdk/                 # Builder-facing client + key/proof helpers
   crypto/              # Ed25519 sign/verify + fail-closed verifyProof
+contracts/             # Optional Solidity registry/anchor (Foundry)
 tooling/               # shared tsconfig
 examples/              # register → verify runnable script
 ```
@@ -87,6 +92,8 @@ pnpm --filter @agentkey/mcp dev
 
 Copy `.env.example` → `.env` locally. Set `AGENTKEY_ISSUER_PRIVATE_KEY` / `AGENTKEY_ISSUER_PUBLIC_KEY` to 32-byte hex Ed25519 keys, or leave blank for ephemeral local issuer keys (dev only). **Never commit secrets.**
 
+1. **Agent registers** — generate Ed25519 subject keys; `POST /v1/agents` with `publicHandle` + `publicKey` (optional `commitOnChain` when registry env is set; see `contracts/README.md`).
+2. **Third party verifies** — `POST /v1/verify` with `agentId` + JSON ownership `proof` → typed `VerifyResult` (errors → `status: "error"`, never soft-allow).
 ## Minimal example
 
 1. **Issue** — generate Ed25519 subject keys; `POST /v1/agents` with `publicHandle` + `publicKey` (optional `commitOnChain` for the hybrid anchor stub).
@@ -124,6 +131,9 @@ See [examples/register-and-verify.md](./examples/register-and-verify.md) for cur
 
 ## Hybrid anchoring
 
+- **Now:** TypeScript for protocol, crypto helpers, HTTP, MCP, SDK.
+- **Later:** Extract protocol core (crypto, canonical encoding, verify) to **Rust** (preferred) or Go when the wire format is frozen.
+- **On-chain:** optional Solidity registry/anchor (`contracts/`) — not the product surface; verify stays off-chain.
 Off-chain is the default path for issue / resolve / verify. Optional on-chain commit (`commitOnChain` / `AGENTKEY_ANCHOR_*`) is a **registry stub** for IDs that need public auditability — not required for product verify. Production chain deploy is out of scope for the current slices.
 
 ## Contributing
