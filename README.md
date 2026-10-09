@@ -11,14 +11,13 @@ Verify always returns a typed answer: `valid` | `invalid` | `unknown` | `revoked
 **No RPC. No wallet. No Foundry.** Issue → verify works with the API alone.
 
 ```bash
-git clone https://github.com/Rosh2403/AgentKey.git
-cd AgentKey
-pnpm install
+git clone https://github.com/Rosh2403/AgentKey.git && cd AgentKey
+pnpm install && pnpm build
 pnpm --filter @agentkey/api dev          # terminal 1 — leave running (:8787)
 pnpm example:quickstart                  # terminal 2 — issue → verify
 ```
 
-That’s **5 commands** from a cold clone. You should see `status: "valid"`, then a fail-closed `status: "error"` for a malformed proof.
+That’s **4 commands** from a cold clone (≤5). You should see `status: "valid"`, then a fail-closed `status: "error"` for a malformed proof.
 
 Full walkthrough (MCP, troubleshooting, optional on-chain appendix): **[examples/quickstart/README.md](./examples/quickstart/README.md)**.
 

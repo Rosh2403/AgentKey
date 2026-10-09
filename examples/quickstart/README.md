@@ -6,9 +6,8 @@ Cold clone → install → run API → **issue → verify** in **≤5 commands**
 ## Exact commands
 
 ```bash
-git clone https://github.com/Rosh2403/AgentKey.git
-cd AgentKey
-pnpm install
+git clone https://github.com/Rosh2403/AgentKey.git && cd AgentKey
+pnpm install && pnpm build
 pnpm --filter @agentkey/api dev          # terminal 1 — leave running (:8787)
 pnpm example:quickstart                  # terminal 2 — issue → verify
 ```
@@ -17,11 +16,10 @@ Expect `status: "valid"` for a good proof, then `status: "error"` for a malforme
 
 | # | Command | What it does |
 | --- | --- | --- |
-| 1 | `git clone …` | Get the repo |
-| 2 | `cd AgentKey` | Enter the workspace |
-| 3 | `pnpm install` | Install workspace deps (Node ≥ 20, pnpm) |
-| 4 | `pnpm --filter @agentkey/api dev` | Start HTTP API on `http://127.0.0.1:8787` |
-| 5 | `pnpm example:quickstart` | Issue an ID, resolve, verify ownership |
+| 1 | `git clone … && cd AgentKey` | Get the repo and enter it |
+| 2 | `pnpm install && pnpm build` | Install deps + compile workspace packages (Node ≥ 20, pnpm) |
+| 3 | `pnpm --filter @agentkey/api dev` | Start HTTP API on `http://127.0.0.1:8787` |
+| 4 | `pnpm example:quickstart` | Issue an ID, resolve, verify ownership |
 
 Secrets: none required. Leave issuer keys blank for ephemeral local keys (dev only). Copy `.env.example` → `.env` only if you want persistent issuer keys (`pnpm issuer:generate`). **Never commit secrets.**
 

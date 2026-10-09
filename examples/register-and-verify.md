@@ -10,7 +10,7 @@ Slice-1 uses real **Ed25519** keys. Issue binds `id` + `publicHandle` + `private
 ## 1. Start the API
 
 ```bash
-pnpm install
+pnpm install && pnpm build
 pnpm --filter @agentkey/api dev
 # http://127.0.0.1:8787
 ```

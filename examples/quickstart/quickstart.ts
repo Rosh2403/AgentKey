@@ -2,7 +2,7 @@
  * 5-minute quickstart: issue → verify (off-chain, no RPC).
  *
  * Prerequisites:
- *   pnpm install
+ *   pnpm install && pnpm build
  *   pnpm --filter @agentkey/api dev   # leave running on :8787
  *
  * Run:
