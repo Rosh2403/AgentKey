@@ -7,11 +7,15 @@
  *
  * Or with a custom base URL:
  *   AGENTKEY_API_URL=http://127.0.0.1:8787 pnpm example:register-verify
+ *
+ * Optional hybrid on-chain commit (API must have AGENTKEY_ANCHOR_* configured):
+ *   AGENTKEY_DEMO_COMMIT_ONCHAIN=1 pnpm example:register-verify
  */
 
 import { AgentkeyClient, agentKeys } from "@agentkey/sdk";
 
 const baseUrl = process.env.AGENTKEY_API_URL ?? "http://127.0.0.1:8787";
+const commitOnChain = process.env.AGENTKEY_DEMO_COMMIT_ONCHAIN === "1";
 
 async function main(): Promise<void> {
   const client = new AgentkeyClient({ baseUrl });
@@ -21,9 +25,13 @@ async function main(): Promise<void> {
   const handle = `demo-bot-${Date.now()}`;
 
   console.log("1) Agent registers with public handle + pubkey…");
+  if (commitOnChain) {
+    console.log("   (hybrid) commitOnChain=true — optional registry anchor");
+  }
   const agent = await client.issue({
     publicHandle: handle,
     publicKey: subject.publicKey,
+    ...(commitOnChain ? { commitOnChain: true } : {}),
   });
   console.log("   issued:", {
     id: agent.id,
@@ -31,6 +39,9 @@ async function main(): Promise<void> {
     privateSubject: agent.privateSubject,
     issuerId: agent.issuerId,
     status: agent.status,
+    ...(agent.anchorCommitment
+      ? { anchorCommitment: agent.anchorCommitment }
+      : {}),
   });
 
   // --- Third party: resolve public view (no private subject) ---
@@ -41,6 +52,9 @@ async function main(): Promise<void> {
     publicHandle: resolved.publicHandle,
     privateSubject: resolved.privateSubject ?? null,
     publicKey: `${resolved.publicKey.slice(0, 16)}…`,
+    ...(resolved.anchorCommitment
+      ? { anchorCommitment: resolved.anchorCommitment }
+      : {}),
   });
 
   // --- Agent proves control; third party verifies ---
@@ -71,6 +85,13 @@ async function main(): Promise<void> {
   if (closed.status !== "error") {
     process.exitCode = 1;
     console.error("Expected fail-closed error for malformed proof.");
+  }
+
+  if (commitOnChain && !agent.anchorCommitment) {
+    process.exitCode = 1;
+    console.error(
+      "Expected anchorCommitment when AGENTKEY_DEMO_COMMIT_ONCHAIN=1.",
+    );
   }
 }
 

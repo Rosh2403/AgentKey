@@ -20,6 +20,15 @@ pnpm example:register-verify
 
 This generates a subject keypair, calls `POST /v1/agents`, resolves the public handle, builds a signed ownership proof, and prints a typed verify result (`valid`), then a fail-closed malformed-proof case (`error`).
 
+Optional hybrid on-chain commit (API must have `AGENTKEY_ANCHOR_*` set — see `contracts/README.md`):
+
+```bash
+AGENTKEY_DEMO_COMMIT_ONCHAIN=1 pnpm example:register-verify
+# issue response includes anchorCommitment when the registry tx succeeds
+```
+
+Spoken 90-second judge script: [`docs/demo-script.md`](../docs/demo-script.md).
+
 ## 3. Manual curl path
 
 Generate keys (Node one-liner) or use the SDK helpers from the script above. Subject `publicKey` must be **64 hex chars** (raw 32-byte Ed25519).
