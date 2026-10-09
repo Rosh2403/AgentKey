@@ -1,0 +1,117 @@
+{
+  "wireVersion": "agentkey-v1",
+  "description": "Deterministic Agentkey protocol-v1 conformance vectors. Seeds are test-only (not secrets).",
+  "keys": {
+    "subject": {
+      "privateKey": "0101010101010101010101010101010101010101010101010101010101010101",
+      "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "note": "seed = 0x01 repeated 32 bytes"
+    },
+    "issuer": {
+      "privateKey": "0202020202020202020202020202020202020202020202020202020202020202",
+      "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "note": "seed = 0x02 repeated 32 bytes"
+    },
+    "other": {
+      "privateKey": "0303030303030303030303030303030303030303030303030303030303030303",
+      "publicKey": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "note": "seed = 0x03 repeated 32 bytes (wrong signer)"
+    }
+  },
+  "canonical": {
+    "verifyMessage": "agentkey-verify-v1\nak_conformance_001\nchal-conformance-v1",
+    "issueMessage": "agentkey-issue-v1\nak_conformance_001\nconformance-bot\nsubj_conformance_001\n8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+  },
+  "agent": {
+    "id": "ak_conformance_001",
+    "publicHandle": "conformance-bot",
+    "privateSubject": "subj_conformance_001",
+    "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "status": "active",
+    "issuerAttestation": "eeca4a1cca1b3b0ba2b527eabfa5b3ab4291e9538f9ddda5b75484ee3bfb526fc54b6e1ff69ba618df451e3f1e7c8ac950e36e4d516c362f37bba503efcb8003"
+  },
+  "cases": [
+    {
+      "name": "valid_ownership_with_attestation",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": "{\"challenge\":\"chal-conformance-v1\",\"signature\":\"3a14d170765c81d643b204a8f0deda9e5ad9945cbce32235419b53c27b97507387e570090a91c49b8905f2fddd05e466a1be25b3324e0cf2f44eeff4c7e4f60e\"}"
+      },
+      "expected": {
+        "status": "valid"
+      }
+    },
+    {
+      "name": "invalid_wrong_signer",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": "{\"challenge\":\"chal-conformance-v1\",\"signature\":\"5b2ae126a6cd05e639500fa6151c006540956c092c3b4dc4128c368690af76711e98138ecca316db0938dc93f7dccc06e00d55b2d7975aa278b8db5c28f8400b\"}"
+      },
+      "expected": {
+        "status": "invalid",
+        "reasonIncludes": "signature"
+      }
+    },
+    {
+      "name": "unknown_missing_agent",
+      "request": {
+        "agentId": "ak_missing",
+        "proof": "{\"challenge\":\"chal-conformance-v1\",\"signature\":\"3a14d170765c81d643b204a8f0deda9e5ad9945cbce32235419b53c27b97507387e570090a91c49b8905f2fddd05e466a1be25b3324e0cf2f44eeff4c7e4f60e\"}"
+      },
+      "unresolved": true,
+      "expected": {
+        "status": "unknown"
+      }
+    },
+    {
+      "name": "revoked_agent",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": "{\"challenge\":\"chal-conformance-v1\",\"signature\":\"3a14d170765c81d643b204a8f0deda9e5ad9945cbce32235419b53c27b97507387e570090a91c49b8905f2fddd05e466a1be25b3324e0cf2f44eeff4c7e4f60e\"}"
+      },
+      "resolveOverride": {
+        "status": "revoked"
+      },
+      "expected": {
+        "status": "revoked"
+      }
+    },
+    {
+      "name": "error_missing_proof",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": ""
+      },
+      "expected": {
+        "status": "error"
+      }
+    },
+    {
+      "name": "error_malformed_proof",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": "not-json"
+      },
+      "expected": {
+        "status": "error",
+        "reasonIncludes": "JSON"
+      }
+    },
+    {
+      "name": "error_attestation_without_issuer_key",
+      "request": {
+        "agentId": "ak_conformance_001",
+        "proof": "{\"challenge\":\"chal-conformance-v1\",\"signature\":\"3a14d170765c81d643b204a8f0deda9e5ad9945cbce32235419b53c27b97507387e570090a91c49b8905f2fddd05e466a1be25b3324e0cf2f44eeff4c7e4f60e\"}"
+      },
+      "omitIssuerPublicKey": true,
+      "expected": {
+        "status": "error",
+        "reasonIncludes": "issuer"
+      }
+    }
+  ],
+  "signatures": {
+    "ownership": "3a14d170765c81d643b204a8f0deda9e5ad9945cbce32235419b53c27b97507387e570090a91c49b8905f2fddd05e466a1be25b3324e0cf2f44eeff4c7e4f60e",
+    "issuerAttestation": "eeca4a1cca1b3b0ba2b527eabfa5b3ab4291e9538f9ddda5b75484ee3bfb526fc54b6e1ff69ba618df451e3f1e7c8ac950e36e4d516c362f37bba503efcb8003"
+  }
+}

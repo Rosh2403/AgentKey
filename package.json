@@ -9,14 +9,15 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false",
-    "lint": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false && pnpm --filter @agentkey/dashboard typecheck",
+    "lint": "tsc -b --pretty false && pnpm --filter @agentkey/dashboard typecheck",
     "test": "pnpm run build && pnpm -r run test",
     "test:contracts": "cd contracts && forge test",
     "dev:api": "pnpm --filter @agentkey/api dev",
+    "dev:dashboard": "pnpm --filter @agentkey/dashboard dev",
     "dev:mcp": "pnpm --filter @agentkey/mcp dev",
     "example:register-verify": "pnpm --filter @agentkey/sdk build && tsx examples/register-and-verify.ts",
-    "clean": "rm -rf packages/*/dist apps/*/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
+    "clean": "rm -rf packages/*/dist apps/*/dist apps/dashboard/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
   },
   "dependencies": {
     "@agentkey/sdk": "workspace:*"
