@@ -24,11 +24,18 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 }
 
+const corsHeaders: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, authorization, accept",
+};
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
+    ...corsHeaders,
   });
   res.end(payload);
 }
@@ -36,6 +43,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
   const { pathname } = url;
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, corsHeaders);
+    res.end();
+    return;
+  }
 
   try {
     if (req.method === "GET" && pathname === "/health") {
@@ -53,7 +66,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     const revokeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/revoke$/);
     if (req.method === "POST" && revokeMatch) {
       const idOrHandle = decodeURIComponent(revokeMatch[1] ?? "");
-      const result = revokeAgentIdentity(idOrHandle);
+      const result = await revokeAgentIdentity(idOrHandle);
       if ("error" in result) {
         sendJson(res, 404, result);
         return;

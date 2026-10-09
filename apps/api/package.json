@@ -30,7 +30,8 @@
   },
   "dependencies": {
     "@agentkey/crypto": "workspace:*",
-    "@agentkey/protocol": "workspace:*"
+    "@agentkey/protocol": "workspace:*",
+    "viem": "^2.57.4"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

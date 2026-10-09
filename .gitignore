@@ -7,6 +7,7 @@ dist/
 build/
 *.tsbuildinfo
 .turbo/
+target/
 
 # Secrets — never commit
 .env
@@ -40,3 +41,8 @@ tmp/
 .data/
 # Local agent store / fixtures
 fixtures/local/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
