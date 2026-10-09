@@ -1,7 +1,9 @@
 /**
- * Hybrid anchoring (locked C): optional on-chain commit via AgentkeyRegistry.
+ * Hybrid anchoring (locked C): optional on-chain commit via AgentkeyRegistry
+ * or AgentkeyErc8004Adapter (dual-write → draft ERC-8004 Identity Registry).
  * Off-chain issue / resolve / verify remain the product source of truth.
  * On-chain path is opt-in when env is fully configured.
+ * With AGENTKEY_ANCHOR_ENABLED=false (default), this module is unused.
  */
 
 import {
@@ -28,6 +30,8 @@ export interface AnchorResult {
   onChain: boolean;
   /** Present when a registry tx was mined. */
   txHash?: string;
+  /** ERC-8004 tokenId when dual-write adapter is used and mapping is readable. */
+  erc8004AgentId?: string;
 }
 
 export interface RegistryConfig {
@@ -35,8 +39,11 @@ export interface RegistryConfig {
   rpcUrl: string;
   address: Hex;
   privateKey: Hex;
+  /** Optional IdentityRegistry8004 address (docs / dual-write signal). */
+  erc8004Address?: Hex;
 }
 
+/** Shared commit/revoke/get surface: AgentkeyRegistry or AgentkeyErc8004Adapter. */
 const REGISTRY_ABI = [
   {
     type: "function",
@@ -46,7 +53,7 @@ const REGISTRY_ABI = [
       { name: "agentIdHash", type: "bytes32" },
       { name: "commitment", type: "bytes32" },
     ],
-    outputs: [],
+    outputs: [{ name: "erc8004AgentId", type: "uint256" }],
   },
   {
     type: "function",
@@ -65,6 +72,13 @@ const REGISTRY_ABI = [
       { name: "revoked", type: "bool" },
       { name: "exists", type: "bool" },
     ],
+  },
+  {
+    type: "function",
+    name: "erc8004AgentIdOf",
+    stateMutability: "view",
+    inputs: [{ name: "agentIdHash", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -102,11 +116,16 @@ export function readRegistryConfig(
       error: "AGENTKEY_REGISTRY_PRIVATE_KEY must be a 32-byte hex private key",
     };
   }
+  const erc8004 = env.AGENTKEY_ERC8004_ADDRESS?.trim() ?? "";
+  if (erc8004 && !/^0x[0-9a-fA-F]{40}$/.test(erc8004)) {
+    return { error: "AGENTKEY_ERC8004_ADDRESS must be a 20-byte hex address" };
+  }
   return {
     enabled: true,
     rpcUrl,
     address: address as Hex,
     privateKey: privateKey as Hex,
+    ...(erc8004 ? { erc8004Address: erc8004 as Hex } : {}),
   };
 }
 
@@ -169,10 +188,29 @@ export async function commitAnchor(
     throw new Error(`on-chain commit failed: tx ${hash}`);
   }
 
+  let erc8004AgentId: string | undefined;
+  // Optional dual-write read: adapter exposes erc8004AgentIdOf; plain registry does not.
+  if (config.erc8004Address) {
+    try {
+      const tokenId = await publicClient.readContract({
+        address: config.address,
+        abi: REGISTRY_ABI,
+        functionName: "erc8004AgentIdOf",
+        args: [agentIdHash],
+      });
+      if (tokenId > 0n) {
+        erc8004AgentId = tokenId.toString();
+      }
+    } catch {
+      // Ignore — registry may be AgentkeyRegistry-only.
+    }
+  }
+
   return {
     commitment,
     onChain: true,
     txHash: hash,
+    ...(erc8004AgentId !== undefined ? { erc8004AgentId } : {}),
   };
 }
 
