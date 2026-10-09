@@ -8,13 +8,26 @@ import {
   type VerifyRequest,
   type VerifyResult,
 } from "@agentkey/protocol";
-import { verifyProof } from "@agentkey/crypto";
-import { getAgent, putAgent } from "./store.js";
+import {
+  createIssuerAttestation,
+  isValidPublicKeyHex,
+  verifyProof,
+} from "@agentkey/crypto";
+import { getAgent, putAgent, revokeAgent, type StoredAgent } from "./store.js";
 import { commitAnchor } from "./registry.js";
+import { getIssuerKeys } from "./issuer.js";
+
+function toPublicAgent(agent: StoredAgent): AgentId {
+  const { privateSubject: _hidden, ...publicView } = agent;
+  return publicView;
+}
 
 export async function issueAgent(request: IssueRequest): Promise<AgentId> {
   if (!request.publicHandle?.trim() || !request.publicKey?.trim()) {
     throw new Error("publicHandle and publicKey are required");
+  }
+  if (!isValidPublicKeyHex(request.publicKey)) {
+    throw new Error("publicKey must be a 32-byte Ed25519 key (hex)");
   }
   const existing = getAgent(request.publicHandle);
   if (existing) {
@@ -23,6 +36,7 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
 
   const id = `ak_${randomUUID().replace(/-/g, "")}`;
   const privateSubject = `subj_${randomUUID().replace(/-/g, "")}`;
+  const issuer = getIssuerKeys();
 
   let anchorCommitment: string | undefined;
   if (request.commitOnChain) {
@@ -33,16 +47,27 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
     anchorCommitment = anchor.commitment;
   }
 
-  const agent: AgentId = {
+  const issuerAttestation = createIssuerAttestation({
+    id,
+    publicHandle: request.publicHandle,
+    privateSubject,
+    publicKey: request.publicKey,
+    issuerPrivateKey: issuer.privateKey,
+  });
+
+  const agent: StoredAgent = {
     id,
     publicHandle: request.publicHandle,
     privateSubject,
     publicKey: request.publicKey,
     issuerId: ROOT_ISSUER_ID,
+    issuerAttestation,
+    status: "active",
     ...(anchorCommitment !== undefined ? { anchorCommitment } : {}),
     createdAt: new Date().toISOString(),
   };
   putAgent(agent);
+  // Issue response includes private subject (registrant is authorized).
   return agent;
 }
 
@@ -54,12 +79,10 @@ export function resolveAgent(
     return { error: "not_found" };
   }
   if (request.includePrivateSubject) {
-    // Slice-0: no real authz — do not return private subject by default path.
-    // Callers must pass includePrivateSubject; production will require authorization.
+    // Slice-1: no real authz yet — opt-in flag only. Production must authorize.
     return agent;
   }
-  const { privateSubject: _hidden, ...publicView } = agent;
-  return publicView;
+  return toPublicAgent(agent);
 }
 
 export function verifyAgent(request: VerifyRequest): VerifyResult {
@@ -69,11 +92,35 @@ export function verifyAgent(request: VerifyRequest): VerifyResult {
     }
     const agent = getAgent(request.agentId);
     if (!agent) {
-      return { status: "unknown", reason: "agent not found" };
+      return verifyProof(request, undefined, {
+        issuerPublicKey: getIssuerKeys().publicKey,
+      });
     }
-    return verifyProof(request);
+    return verifyProof(
+      request,
+      {
+        publicKey: agent.publicKey,
+        status: agent.status,
+        publicHandle: agent.publicHandle,
+        privateSubject: agent.privateSubject,
+        ...(agent.issuerAttestation !== undefined
+          ? { issuerAttestation: agent.issuerAttestation }
+          : {}),
+      },
+      { issuerPublicKey: getIssuerKeys().publicKey },
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "verify failed";
     return failClosed(message);
   }
+}
+
+export function revokeAgentIdentity(
+  idOrHandle: string,
+): AgentId | { error: string } {
+  const revoked = revokeAgent(idOrHandle);
+  if (!revoked) {
+    return { error: "not_found" };
+  }
+  return toPublicAgent(revoked);
 }

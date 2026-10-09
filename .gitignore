@@ -35,3 +35,6 @@ coverage/
 # Misc
 tmp/
 .cache/
+.data/
+# Local agent store / fixtures
+fixtures/local/

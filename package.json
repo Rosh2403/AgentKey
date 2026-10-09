@@ -14,10 +14,15 @@
     "test": "pnpm run build && pnpm -r run test",
     "dev:api": "pnpm --filter @agentkey/api dev",
     "dev:mcp": "pnpm --filter @agentkey/mcp dev",
+    "example:register-verify": "pnpm --filter @agentkey/sdk build && tsx examples/register-and-verify.ts",
     "clean": "rm -rf packages/*/dist apps/*/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
+  },
+  "dependencies": {
+    "@agentkey/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   },
   "pnpm": {

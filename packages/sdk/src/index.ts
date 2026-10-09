@@ -6,6 +6,11 @@ import type {
   VerifyResult,
 } from "@agentkey/protocol";
 import { failClosed } from "@agentkey/protocol";
+import {
+  createOwnershipProof,
+  generateKeyPair,
+  type KeyPairHex,
+} from "@agentkey/crypto";
 
 export interface AgentkeyClientOptions {
   baseUrl: string;
@@ -14,8 +19,8 @@ export interface AgentkeyClientOptions {
 }
 
 /**
- * Minimal builder-facing client stub.
- * Talks to HTTP issue / resolve / verify once the API is running.
+ * Minimal builder-facing client for issue / resolve / verify.
+ * Verify transport failures fail closed (`status: "error"`).
  */
 export class AgentkeyClient {
   constructor(private readonly options: AgentkeyClientOptions) {}
@@ -72,11 +77,25 @@ export class AgentkeyClient {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
+      // Verify endpoints return typed VerifyResult even on HTTP 400.
+      if (path === "/v1/verify") {
+        try {
+          return (await res.json()) as T;
+        } catch {
+          throw new Error(`POST ${path} failed: ${res.status}`);
+        }
+      }
       throw new Error(`POST ${path} failed: ${res.status}`);
     }
     return (await res.json()) as T;
   }
 }
+
+/** Convenience: generate subject keypair + ownership proof helpers. */
+export const agentKeys = {
+  generate: (): KeyPairHex => generateKeyPair(),
+  createProof: createOwnershipProof,
+};
 
 export type {
   AgentId,
@@ -84,4 +103,5 @@ export type {
   ResolveRequest,
   VerifyRequest,
   VerifyResult,
+  KeyPairHex,
 };

@@ -1,6 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { IssueRequest, ResolveRequest, VerifyRequest } from "@agentkey/protocol";
-import { issueAgent, resolveAgent, verifyAgent } from "./handlers.js";
+import {
+  issueAgent,
+  resolveAgent,
+  revokeAgentIdentity,
+  verifyAgent,
+} from "./handlers.js";
+import { getIssuerKeys } from "./issuer.js";
 
 const host = process.env.AGENTKEY_API_HOST ?? "127.0.0.1";
 const port = Number(process.env.AGENTKEY_API_PORT ?? "8787");
@@ -40,6 +46,18 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
       return;
     }
 
+    const revokeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/revoke$/);
+    if (req.method === "POST" && revokeMatch) {
+      const idOrHandle = decodeURIComponent(revokeMatch[1] ?? "");
+      const result = revokeAgentIdentity(idOrHandle);
+      if ("error" in result) {
+        sendJson(res, 404, result);
+        return;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
     const resolveMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
     if (req.method === "GET" && resolveMatch) {
       const idOrHandle = decodeURIComponent(resolveMatch[1] ?? "");
@@ -60,7 +78,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     if (req.method === "POST" && pathname === "/v1/verify") {
       const body = (await readJson(req)) as VerifyRequest;
       const result = verifyAgent(body);
-      // Fail closed: transport/parse errors already mapped to status error.
+      // Fail closed: parse/crypto errors → status error (HTTP 400).
       const httpStatus = result.status === "error" ? 400 : 200;
       sendJson(res, httpStatus, result);
       return;
@@ -76,6 +94,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     sendJson(res, 400, { error: message });
   }
 }
+
+// Ensure issuer keys are loaded at boot (ephemeral warning if unset).
+getIssuerKeys();
 
 const server = createServer((req, res) => {
   void handler(req, res);
