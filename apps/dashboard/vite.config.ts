@@ -20,16 +20,24 @@ export default defineConfig(({ mode }) => {
     ...env,
   } as Record<string, string>);
 
+  const port = Number(
+    env.AGENTKEY_DASHBOARD_PORT ?? process.env.AGENTKEY_DASHBOARD_PORT ?? "5173",
+  );
+
   return {
     server: {
-      port: Number(env.AGENTKEY_DASHBOARD_PORT ?? process.env.AGENTKEY_DASHBOARD_PORT ?? "5173"),
+      host: "127.0.0.1",
+      port,
       proxy: {
         "/v1": { target, changeOrigin: true },
         "/health": { target, changeOrigin: true },
       },
     },
     preview: {
-      port: Number(env.AGENTKEY_DASHBOARD_PORT ?? process.env.AGENTKEY_DASHBOARD_PORT ?? "4173"),
+      host: "127.0.0.1",
+      port: Number(
+        env.AGENTKEY_DASHBOARD_PORT ?? process.env.AGENTKEY_DASHBOARD_PORT ?? "4173",
+      ),
       proxy: {
         "/v1": { target, changeOrigin: true },
         "/health": { target, changeOrigin: true },
