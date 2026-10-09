@@ -54,7 +54,13 @@ Narrate the three beats as they print:
 | **Verify** | “Agent signs a challenge; verifier gets a typed **`valid`**.” | `verdict: { status: "valid", … }` |
 | **Fail-closed** | “Malformed proof → **`error`**, not maybe.” | `verdict: { status: "error", … }` |
 
-Optional 10s (if Anvil + registry env set): issue with `commitOnChain: true` and show `anchorCommitment` / tx — verify still off-chain. Skip if timing is tight; say “optional auditability hook.”
+Optional 10s (if Anvil + registry env set):
+
+```bash
+AGENTKEY_DEMO_COMMIT_ONCHAIN=1 pnpm example:register-verify
+```
+
+Show `anchorCommitment` — verify still off-chain. Skip if timing is tight; say “optional auditability hook.”
 
 ---
 
@@ -75,6 +81,7 @@ git clone https://github.com/Rosh2403/AgentKey.git
 cd AgentKey
 git checkout development   # or the demo PR branch
 pnpm install
+pnpm --filter @agentkey/protocol build && pnpm --filter @agentkey/crypto build && pnpm --filter @agentkey/sdk build
 pnpm --filter @agentkey/api dev   # terminal 1
 pnpm example:register-verify      # terminal 2
 ```
@@ -82,11 +89,8 @@ pnpm example:register-verify      # terminal 2
 Optional hybrid on-chain (local Anvil — see `contracts/README.md`):
 
 ```bash
-# terminal 0: anvil
-# deploy registry → set AGENTKEY_ANCHOR_* in .env
-# restart API, then issue with commitOnChain: true via SDK/HTTP
+anvil                                    # terminal 0
+cd contracts && ./script/deploy-local.sh
+# set AGENTKEY_ANCHOR_* in .env, restart API
+AGENTKEY_DEMO_COMMIT_ONCHAIN=1 pnpm example:register-verify
 ```
-
-Artifacts from a captured run live under the project store:
-
-`media/hackathon-demo/` (terminal log + screenshots when present).
