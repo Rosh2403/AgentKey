@@ -126,7 +126,7 @@ describe("api handlers", () => {
       publicHandle: `revoked-${Date.now()}`,
       publicKey: keys.publicKey,
     });
-    const revoked = revokeAgentIdentity(issued.id);
+    const revoked = await revokeAgentIdentity(issued.id);
     assert.ok(!("error" in revoked));
     const proof = createOwnershipProof({
       agentId: issued.id,
@@ -135,5 +135,18 @@ describe("api handlers", () => {
     });
     const result = verifyAgent({ agentId: issued.id, proof });
     assert.equal(result.status, "revoked");
+  });
+
+  it("issue with commitOnChain fails closed when registry env missing", async () => {
+    const keys = generateKeyPair();
+    await assert.rejects(
+      () =>
+        issueAgent({
+          publicHandle: `anchor-${Date.now()}`,
+          publicKey: keys.publicKey,
+          commitOnChain: true,
+        }),
+      /AGENTKEY_ANCHOR_ENABLED|registry/,
+    );
   });
 });

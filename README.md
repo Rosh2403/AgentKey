@@ -9,7 +9,7 @@ Portable, verifiable **agent identity** — unique Agent IDs that apps can **iss
 | Decision | Choice |
 | --- | --- |
 | Issuer model | **A — Single root issuer** |
-| Anchoring | **C — Hybrid** (off-chain default + optional on-chain commit stub) |
+| Anchoring | **C — Hybrid** (off-chain default + optional on-chain commit; see `contracts/`) |
 | ID visibility | **C — Dual** (public handle + private subject) |
 | Language | **TypeScript** end-to-end now; Rust/Go protocol core later; Solidity registry only when needed |
 
@@ -23,6 +23,7 @@ packages/
   protocol/            # ID + verify types + canonical messages
   sdk/                 # Builder client + key/proof helpers
   crypto/              # Ed25519 sign/verify + fail-closed verifyProof
+contracts/             # Optional Solidity registry/anchor (Foundry)
 tooling/               # shared tsconfig
 examples/              # register → verify runnable script
 ```
@@ -46,7 +47,7 @@ Copy `.env.example` → `.env` locally. Set `AGENTKEY_ISSUER_PRIVATE_KEY` / `AGE
 
 ## Minimal example path
 
-1. **Agent registers** — generate Ed25519 subject keys; `POST /v1/agents` with `publicHandle` + `publicKey` (optional `commitOnChain` for hybrid anchor stub).
+1. **Agent registers** — generate Ed25519 subject keys; `POST /v1/agents` with `publicHandle` + `publicKey` (optional `commitOnChain` when registry env is set; see `contracts/README.md`).
 2. **Third party verifies** — `POST /v1/verify` with `agentId` + JSON ownership `proof` → typed `VerifyResult` (errors → `status: "error"`, never soft-allow).
 
 See [examples/register-and-verify.md](./examples/register-and-verify.md).
@@ -75,7 +76,7 @@ const result = await client.verify({ agentId: agent.id, proof });
 
 - **Now:** TypeScript for protocol, crypto helpers, HTTP, MCP, SDK.
 - **Later:** Extract protocol core (crypto, canonical encoding, verify) to **Rust** (preferred) or Go when the wire format is frozen.
-- **On-chain:** optional registry/anchor stub in Solidity — not the product surface.
+- **On-chain:** optional Solidity registry/anchor (`contracts/`) — not the product surface; verify stays off-chain.
 
 ## Contributing
 

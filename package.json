@@ -12,6 +12,7 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "tsc -b --pretty false",
     "test": "pnpm run build && pnpm -r run test",
+    "test:contracts": "cd contracts && forge test",
     "dev:api": "pnpm --filter @agentkey/api dev",
     "dev:mcp": "pnpm --filter @agentkey/mcp dev",
     "example:register-verify": "pnpm --filter @agentkey/sdk build && tsx examples/register-and-verify.ts",
