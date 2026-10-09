@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+.turbo/
+target/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_ed25519
+id_rsa
+secrets/
+.secrets/
+*.priv
+*.pub
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs / coverage
+logs/
+*.log
+coverage/
+.nyc_output/
+
+# Misc
+tmp/
+.cache/
+.data/
+# Local agent store / fixtures
+fixtures/local/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
