@@ -1,6 +1,11 @@
 # Example: agent registers → third party verifies
 
+> **Prefer the 5-minute path:** [quickstart/README.md](./quickstart/README.md) (`pnpm example:quickstart`).  
+> This page adds curl details and the longer scripted example.
+
 Slice-1 uses real **Ed25519** keys. Issue binds `id` + `publicHandle` + `privateSubject` ↔ subject pubkey under the single root issuer. Verify checks an ownership proof against the resolved key and fails closed on parse/crypto/transport errors.
+
+**Off-chain by default** — no RPC, no `AGENTKEY_REGISTRY_*`, no `commitOnChain`.
 
 ## 1. Start the API
 
@@ -15,6 +20,8 @@ Optional: copy `.env.example` → `.env` and set `AGENTKEY_ISSUER_*` (32-byte he
 ## 2. Run the scripted example
 
 ```bash
+pnpm example:quickstart
+# or the older alias:
 pnpm example:register-verify
 ```
 
@@ -44,7 +51,7 @@ Proof wire format (JSON string in `proof`):
 { "challenge": "any-string", "signature": "<hex Ed25519 over canonical message>" }
 ```
 
-Canonical message: `agentkey-verify-v1\n{agentId}\n{challenge}` (signed by the subject private key). Prefer `pnpm example:register-verify` or `agentKeys.createProof` from `@agentkey/sdk` over hand-rolling signatures.
+Canonical message: `agentkey-verify-v1\n{agentId}\n{challenge}` (signed by the subject private key). Prefer `pnpm example:quickstart` or `agentKeys.createProof` from `@agentkey/sdk` over hand-rolling signatures.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/v1/verify \
@@ -53,6 +60,8 @@ curl -sS -X POST http://127.0.0.1:8787/v1/verify \
 ```
 
 Typed results: `valid` | `invalid` | `unknown` | `revoked` | `error`. Malformed proof → `{ "status": "error", … }` (HTTP 400). Never soft-allows.
+
+See [quickstart troubleshooting](./quickstart/README.md#troubleshooting-error-vs-invalid-vs-revoked) for `error` vs `invalid` vs `revoked`.
 
 ## SDK path
 
@@ -76,8 +85,14 @@ console.log(verdict.status); // "valid"
 
 ## MCP tools
 
-Same capabilities: `agentkey_issue`, `agentkey_resolve`, `agentkey_verify` (shared handlers with HTTP).
+Same capabilities: `agentkey_issue`, `agentkey_resolve`, `agentkey_verify`, `agentkey_revoke` (shared handlers with HTTP).
 
 ```bash
 pnpm --filter @agentkey/mcp dev
 ```
+
+Full MCP issue → verify walkthrough: [quickstart/README.md § MCP](./quickstart/README.md#mcp-walkthrough-issue--verify).
+
+## Optional on-chain
+
+Not required for verify. See [quickstart appendix](./quickstart/README.md#appendix-optional-on-chain-not-required) and [`contracts/README.md`](../contracts/README.md).
