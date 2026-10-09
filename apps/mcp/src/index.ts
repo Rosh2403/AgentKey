@@ -8,8 +8,8 @@ import {
 } from "./tools.js";
 
 /**
- * MCP server entry (slice-1).
- * Exposes agentkey_issue / agentkey_resolve / agentkey_verify with the same
+ * MCP server entry.
+ * Exposes agentkey_issue / resolve / verify / revoke with the same
  * typed verify answers as HTTP. Full MCP stdio transport can wrap invokeTool.
  */
 async function main(): Promise<void> {

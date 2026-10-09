@@ -48,6 +48,12 @@ export class AgentkeyClient {
     }
   }
 
+  /** Revoke an agent by id or public handle. Subsequent verify → `revoked`. */
+  async revoke(idOrHandle: string): Promise<AgentId> {
+    const path = `/v1/agents/${encodeURIComponent(idOrHandle)}/revoke`;
+    return this.postJson<AgentId>(path, {});
+  }
+
   private headers(): Record<string, string> {
     const headers: Record<string, string> = {
       "content-type": "application/json",

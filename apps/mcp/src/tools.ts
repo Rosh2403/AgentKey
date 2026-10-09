@@ -9,18 +9,20 @@ import { failClosed } from "@agentkey/protocol";
 import {
   issueAgent,
   resolveAgent,
+  revokeAgentIdentity,
   verifyAgent,
 } from "@agentkey/api/handlers";
 
 /**
- * MCP tool surface — same three capabilities as HTTP:
- * agentkey_issue | agentkey_resolve | agentkey_verify
+ * MCP tool surface — same capabilities as HTTP:
+ * agentkey_issue | agentkey_resolve | agentkey_verify | agentkey_revoke
  */
 
 export type McpToolName =
   | "agentkey_issue"
   | "agentkey_resolve"
-  | "agentkey_verify";
+  | "agentkey_verify"
+  | "agentkey_revoke";
 
 export interface McpToolDescriptor {
   name: McpToolName;
@@ -40,6 +42,11 @@ export const TOOLS: McpToolDescriptor[] = [
   {
     name: "agentkey_verify",
     description: "Verify agent proof; typed fail-closed result",
+  },
+  {
+    name: "agentkey_revoke",
+    description:
+      "Revoke an Agent ID; subsequent verify returns status revoked (fail closed otherwise)",
   },
 ];
 
@@ -98,6 +105,19 @@ export function agentkeyVerify(input: Partial<VerifyRequest>): VerifyResult {
   }
 }
 
+export function agentkeyRevoke(
+  input: Partial<{ idOrHandle: string }>,
+): { ok: true; agent: AgentId } | { ok: false; error: string } {
+  if (!input.idOrHandle?.trim()) {
+    return { ok: false, error: "idOrHandle is required" };
+  }
+  const result = revokeAgentIdentity(input.idOrHandle);
+  if ("error" in result) {
+    return { ok: false, error: result.error };
+  }
+  return { ok: true, agent: result };
+}
+
 export async function invokeTool(
   name: McpToolName,
   args: Record<string, unknown>,
@@ -109,6 +129,8 @@ export async function invokeTool(
       return agentkeyResolve(args as Partial<ResolveRequest>);
     case "agentkey_verify":
       return agentkeyVerify(args as Partial<VerifyRequest>);
+    case "agentkey_revoke":
+      return agentkeyRevoke(args as Partial<{ idOrHandle: string }>);
     default: {
       const _exhaustive: never = name;
       return { ok: false, error: `unknown tool: ${_exhaustive}` };

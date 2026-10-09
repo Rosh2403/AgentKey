@@ -16,6 +16,12 @@ import {
   verifySignature,
   type KeyPairHex,
 } from "./keys.js";
+import {
+  generateIssuerKeyPair,
+  issuerKeySourcesFromEnv,
+  loadIssuerKeyPair,
+  type IssuerKeySources,
+} from "./issuer-keys.js";
 
 export {
   generateKeyPair,
@@ -24,6 +30,13 @@ export {
   signMessage,
   verifySignature,
   type KeyPairHex,
+};
+
+export {
+  generateIssuerKeyPair,
+  issuerKeySourcesFromEnv,
+  loadIssuerKeyPair,
+  type IssuerKeySources,
 };
 
 export interface ResolvedAgentForVerify {
@@ -150,29 +163,4 @@ export function createIssuerAttestation(input: {
     publicKey: input.publicKey,
   });
   return signMessage(message, input.issuerPrivateKey);
-}
-
-/** Load or generate the single root issuer key pair for local/dev. */
-export function loadIssuerKeyPair(env: {
-  privateKey?: string;
-  publicKey?: string;
-}): KeyPairHex & { ephemeral: boolean } {
-  const privateKey = env.privateKey?.trim() ?? "";
-  const publicKey = env.publicKey?.trim() ?? "";
-
-  if (privateKey || publicKey) {
-    if (!isValidPrivateKeyHex(privateKey) || !isValidPublicKeyHex(publicKey)) {
-      throw new Error(
-        "AGENTKEY_ISSUER_PRIVATE_KEY / AGENTKEY_ISSUER_PUBLIC_KEY must be 32-byte hex",
-      );
-    }
-    const probe = signMessage("agentkey-issuer-probe", privateKey);
-    if (!verifySignature("agentkey-issuer-probe", probe, publicKey)) {
-      throw new Error("issuer public/private key mismatch");
-    }
-    return { privateKey, publicKey, ephemeral: false };
-  }
-
-  const generated = generateKeyPair();
-  return { ...generated, ephemeral: true };
 }
