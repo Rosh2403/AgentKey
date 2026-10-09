@@ -7,9 +7,13 @@ import {
   verifyAgent,
 } from "./handlers.js";
 import { getIssuerKeys } from "./issuer.js";
+import { enableDurableStoreDefault, resolveStoreBackend, resolveStorePath } from "./store.js";
 
 const host = process.env.AGENTKEY_API_HOST ?? "127.0.0.1";
 const port = Number(process.env.AGENTKEY_API_PORT ?? "8787");
+
+// Production-like local default: durable file store unless AGENTKEY_STORE=memory.
+enableDurableStoreDefault();
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -116,6 +120,11 @@ const server = createServer((req, res) => {
 });
 
 server.listen(port, host, () => {
+  const backend = resolveStoreBackend();
+  const storeInfo =
+    backend === "file" ? `file:${resolveStorePath()}` : "memory";
   // eslint-disable-next-line no-console
-  console.log(`agentkey api listening on http://${host}:${port}`);
+  console.log(
+    `agentkey api listening on http://${host}:${port} (store=${storeInfo})`,
+  );
 });

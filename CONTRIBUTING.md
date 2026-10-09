@@ -32,3 +32,11 @@ pnpm install
 pnpm typecheck
 pnpm test
 ```
+
+CI runs the same install → typecheck → test sequence on PRs to `development` / `main`.
+
+## Issuer keys & durable store
+
+- Generate root issuer keys: `pnpm issuer:generate` (or `-- --out-dir .secrets`).
+- Never commit private keys; see `.env.example` and [docs/persistence.md](./docs/persistence.md).
+- API defaults to a file-backed store at `.data/agents.json`; set `AGENTKEY_STORE=memory` for ephemeral runs.

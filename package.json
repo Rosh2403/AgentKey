@@ -17,6 +17,8 @@
     "dev:dashboard": "pnpm --filter @agentkey/dashboard dev",
     "dev:mcp": "pnpm --filter @agentkey/mcp dev",
     "example:register-verify": "pnpm --filter @agentkey/sdk build && tsx examples/register-and-verify.ts",
+    "issuer:generate": "tsx scripts/generate-issuer-keys.ts",
+    "clean": "rm -rf packages/*/dist apps/*/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
     "clean": "rm -rf packages/*/dist apps/*/dist apps/dashboard/dist *.tsbuildinfo packages/*/*.tsbuildinfo apps/*/*.tsbuildinfo"
   },
   "dependencies": {
