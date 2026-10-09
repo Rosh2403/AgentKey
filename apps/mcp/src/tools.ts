@@ -105,13 +105,13 @@ export function agentkeyVerify(input: Partial<VerifyRequest>): VerifyResult {
   }
 }
 
-export function agentkeyRevoke(
+export async function agentkeyRevoke(
   input: Partial<{ idOrHandle: string }>,
-): { ok: true; agent: AgentId } | { ok: false; error: string } {
+): Promise<{ ok: true; agent: AgentId } | { ok: false; error: string }> {
   if (!input.idOrHandle?.trim()) {
     return { ok: false, error: "idOrHandle is required" };
   }
-  const result = revokeAgentIdentity(input.idOrHandle);
+  const result = await revokeAgentIdentity(input.idOrHandle);
   if ("error" in result) {
     return { ok: false, error: result.error };
   }

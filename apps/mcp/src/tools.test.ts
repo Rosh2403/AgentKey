@@ -67,7 +67,7 @@ describe("mcp tools", () => {
     assert.equal(issued.ok, true);
     if (!issued.ok) return;
 
-    const revoked = agentkeyRevoke({ idOrHandle: issued.agent.id });
+    const revoked = await agentkeyRevoke({ idOrHandle: issued.agent.id });
     assert.equal(revoked.ok, true);
     if (revoked.ok) {
       assert.equal(revoked.agent.status, "revoked");
