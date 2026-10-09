@@ -5,7 +5,14 @@
  * - Issuer: single root (A)
  * - Anchoring: hybrid off-chain default + optional on-chain commit (C)
  * - ID visibility: dual — public handle + private subject (C)
+ *
+ * Wire tag shared with the Rust core (`crates/agentkey-core`, `WIRE_VERSION`)
+ * and `fixtures/protocol-v1/`. Canonical *message* prefixes below are also
+ * versioned (`agentkey-verify-v1`, `agentkey-issue-v1`).
  */
+
+/** Overall wire / protocol version tag (Rust + fixtures use the same string). */
+export const WIRE_VERSION = "agentkey-v1" as const;
 
 /** Typed verify answers — machine-checkable; never free-text. */
 export type VerifyStatus =
