@@ -18,7 +18,9 @@ This folder is the apply-and-PR handoff for a human collaborator (Rosh / Afshal)
 
 Patch base: **AfshalG/countersign `development`** @ `b97a404`.
 
-## Apply + open PR (Rosh, with write on AfshalG/countersign)
+## Apply + open PR (Rosh, write access on AfshalG/countersign)
+
+AgentKey is private — use `gh` (authenticated) or clone, not anonymous raw.githubusercontent.com.
 
 ```bash
 git clone https://github.com/AfshalG/countersign.git
@@ -28,9 +30,10 @@ git checkout development
 git pull origin development
 git checkout -b feature/agentkey-bridge
 
-# Raw patch from this handoff branch (update SHA/branch if needed after merge to main):
-curl -fsSL -o agentkey-bridge.patch \
-  'https://raw.githubusercontent.com/Rosh2403/AgentKey/chore/countersign-bridge-handoff/handoff/countersign-agentkey-bridge.patch'
+# Fetch patch from AgentKey handoff branch (authenticated)
+gh api -H "Accept: application/vnd.github.raw" \
+  "repos/Rosh2403/AgentKey/contents/handoff/countersign-agentkey-bridge.patch?ref=cursor/countersign-bridge-handoff-15be" \
+  > agentkey-bridge.patch
 
 git am agentkey-bridge.patch
 # Already pins @agentkey/sdk to github:Rosh2403/AgentKey#main&path:packages/sdk
@@ -58,22 +61,30 @@ Track 04: **Agentkey = who**, **Countersign = may this agent pay**. Thin bridge 
 
 AgentKey SDK installable from git (merged): https://github.com/Rosh2403/AgentKey/pull/15
 
-\`\`\`json
+```json
 "@agentkey/sdk": "github:Rosh2403/AgentKey#main&path:packages/sdk"
-\`\`\`
+```
 
 ## Ask
 
-Please review/merge into \`development\`. Contract security model unchanged.
+Please review/merge into `development`. Contract security model unchanged.
 BODY
 )"
+```
+
+### Alternate: clone handoff files
+
+```bash
+git clone --depth 1 -b cursor/countersign-bridge-handoff-15be https://github.com/Rosh2403/AgentKey.git /tmp/agentkey-handoff
+cp /tmp/agentkey-handoff/handoff/countersign-agentkey-bridge.patch ./agentkey-bridge.patch
 ```
 
 ### Alternate: git bundle
 
 ```bash
-curl -fsSL -o agentkey-bridge.bundle \
-  'https://raw.githubusercontent.com/Rosh2403/AgentKey/chore/countersign-bridge-handoff/handoff/countersign-agentkey-bridge.bundle'
+gh api -H "Accept: application/vnd.github.raw" \
+  "repos/Rosh2403/AgentKey/contents/handoff/countersign-agentkey-bridge.bundle?ref=cursor/countersign-bridge-handoff-15be" \
+  > agentkey-bridge.bundle
 git fetch agentkey-bridge.bundle feature/agentkey-bridge:feature/agentkey-bridge
 git checkout feature/agentkey-bridge
 ```
