@@ -46,6 +46,12 @@ describe("registry hybrid commitment", () => {
     assert.equal(readRegistryConfig(), null);
   });
 
+  it("readRegistryConfig ignores optional ERC-8004 when anchor disabled", () => {
+    process.env.AGENTKEY_ANCHOR_ENABLED = "false";
+    process.env.AGENTKEY_ERC8004_ADDRESS = "0x0000000000000000000000000000000000000001";
+    assert.equal(readRegistryConfig(), null);
+  });
+
   it("readRegistryConfig errors when enabled but incomplete", () => {
     process.env.AGENTKEY_ANCHOR_ENABLED = "true";
     delete process.env.AGENTKEY_REGISTRY_RPC_URL;
