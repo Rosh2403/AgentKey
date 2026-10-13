@@ -1,0 +1,1173 @@
+From 17707f82b98937c6ed198a6a2d6dac88df182f95 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursor@cursor.com>
+Date: Tue, 13 Oct 2026 19:37:45 +0000
+Subject: [PATCH] feat(gateway): Agentkey verify gate before pay (Track 04
+ bridge)
+
+Add @countersign/agentkey-bridge depending on @agentkey/sdk from git
+(github:Rosh2403/AgentKey#main&path:packages/sdk). When
+AGENTKEY_VERIFY_ENABLED, POST /v1/payments and /v1/runs call Agentkey
+verify (fail closed) before accepting a payment. Off by default.
+---
+ .env.example                                  |   9 ++
+ README.md                                     |   2 +-
+ docs/developers/agentkey.md                   |  94 +++++++++++
+ packages/agentkey-bridge/package.json         |  16 ++
+ packages/agentkey-bridge/src/authorize.ts     |  84 ++++++++++
+ packages/agentkey-bridge/src/bindings.ts      |  41 +++++
+ packages/agentkey-bridge/src/config.ts        |  55 +++++++
+ packages/agentkey-bridge/src/index.ts         |  36 +++++
+ .../agentkey-bridge/test/authorize.test.ts    | 152 ++++++++++++++++++
+ packages/agentkey-bridge/tsconfig.json        |   7 +
+ packages/sdk/src/client.ts                    |   1 +
+ packages/sdk/src/types.ts                     |   5 +
+ pnpm-lock.yaml                                |  16 ++
+ services/gateway/package.json                 |   1 +
+ services/gateway/src/agents/agentkey-gate.ts  |  79 +++++++++
+ services/gateway/src/api/schemas.ts           |  31 ++++
+ services/gateway/src/app.ts                   |  49 +++++-
+ services/gateway/src/main.ts                  |  16 ++
+ services/gateway/test/agentkey-gate.test.ts   | 113 +++++++++++++
+ services/mcp/lib/tools.ts                     |  22 +++
+ 20 files changed, 826 insertions(+), 3 deletions(-)
+ create mode 100644 docs/developers/agentkey.md
+ create mode 100644 packages/agentkey-bridge/package.json
+ create mode 100644 packages/agentkey-bridge/src/authorize.ts
+ create mode 100644 packages/agentkey-bridge/src/bindings.ts
+ create mode 100644 packages/agentkey-bridge/src/config.ts
+ create mode 100644 packages/agentkey-bridge/src/index.ts
+ create mode 100644 packages/agentkey-bridge/test/authorize.test.ts
+ create mode 100644 packages/agentkey-bridge/tsconfig.json
+ create mode 100644 services/gateway/src/agents/agentkey-gate.ts
+ create mode 100644 services/gateway/test/agentkey-gate.test.ts
+
+diff --git a/.env.example b/.env.example
+index 6e963ec..ba2c260 100644
+--- a/.env.example
++++ b/.env.example
+@@ -57,3 +57,12 @@ DEMO_FUNDER_PRIVATE_KEY=
+ DEMO_AGENT_PRIVATE_KEY=
+ # New demo accounts per UTC day (default 20); each costs about 0.09 MON.
+ DEMO_ACCOUNTS_PER_DAY=
++
++# Agentkey verify gate (Track 04 bridge). Off by default so testnet demos keep working.
++# When on, POST /v1/payments and /v1/runs call Agentkey verify (fail closed) before pay.
++# AGENTKEY_VERIFY_ENABLED=true
++# AGENTKEY_BASE_URL=http://127.0.0.1:8787
++# ERC-8004 agent id → Agentkey agent id, e.g. {"2066":"ak_hosted"}
++# AGENTKEY_BINDINGS=
++# Optional bearer for Agentkey private-subject resolve (not required for verify)
++# AGENTKEY_ACCESS_TOKEN=
+diff --git a/README.md b/README.md
+index 32fdd0d..e777648 100644
+--- a/README.md
++++ b/README.md
+@@ -85,7 +85,7 @@ const result = await cs.pay({
+ // 'settled', or 'held' with the reason in plain words and a link for the owner
+ ```
+ 
+-Start with the [developer quickstart](docs/developers/quickstart.md). Coding agents (Claude Code, Cursor, Codex, Muse) can read [`llms.txt`](https://gateway-production-e17a.up.railway.app/llms.txt) or everything in [one file](https://gateway-production-e17a.up.railway.app/llms-full.txt).
++Start with the [developer quickstart](docs/developers/quickstart.md). Optional Agentkey identity verify before pay (Track 04 bridge, off by default): [docs/developers/agentkey.md](docs/developers/agentkey.md). Coding agents (Claude Code, Cursor, Codex, Muse) can read [`llms.txt`](https://gateway-production-e17a.up.railway.app/llms.txt) or everything in [one file](https://gateway-production-e17a.up.railway.app/llms-full.txt).
+ 
+ ## Stated limits
+ 
+diff --git a/docs/developers/agentkey.md b/docs/developers/agentkey.md
+new file mode 100644
+index 0000000..c1a7cc5
+--- /dev/null
++++ b/docs/developers/agentkey.md
+@@ -0,0 +1,94 @@
++# Agentkey ↔ Countersign (Track 04 bridge)
++
++**Agentkey = who.** **Countersign = may this agent pay.**
++
++Same Monad Metropolis Track 04 story, two repos (not a monorepo merge):
++
++| Repo | Role |
++| --- | --- |
++| [Agentkey](https://github.com/Rosh2403/AgentKey) | Portable agent identity: issue / resolve / **verify** (fail closed) |
++| [Countersign](https://github.com/Rosh2403/countersign) | Payment account on Monad: ERC-8004 agent wallets sign payments inside owner rules |
++
++Countersign already ties each payment to an ERC-8004 `agentWallet`. This bridge optionally asks Agentkey “is this agent still who they claim?” **before** the gateway accepts a payment.
++
++## What is wired
++
++- Package `@countersign/agentkey-bridge` — maps ERC-8004 agent id ↔ Agentkey id, calls `@agentkey/sdk` `verify`
++- Gateway choke point: `POST /v1/payments` and `POST /v1/runs` (MCP / SDK pay tools go through the gateway)
++- Behind env flags (default **off** so existing testnet demos keep working)
++
++Verify is **fail closed**: only Agentkey `status: "valid"` authorizes. Transport errors, `invalid`, `unknown`, `revoked`, and `error` all return **403** — never soft-allow.
++
++## Env vars
++
++| Variable | Required when enabled | Meaning |
++| --- | --- | --- |
++| `AGENTKEY_VERIFY_ENABLED` | — | `true` / `1` / `yes` / `on` to turn the gate on |
++| `AGENTKEY_BASE_URL` | yes | Agentkey HTTP API base (no trailing slash needed), e.g. `http://127.0.0.1:8787` |
++| `AGENTKEY_BINDINGS` | recommended | JSON map `{"2066":"ak_hosted",…}` ERC-8004 id → Agentkey id |
++| `AGENTKEY_ACCESS_TOKEN` | no | Optional bearer for Agentkey private resolve |
++
++Names only in `.env.example`. Never commit secrets.
++
++## Dependency (no npm publish)
++
++```json
++"@agentkey/sdk": "github:Rosh2403/AgentKey#main&path:packages/sdk"
++```
++
++
++## Demo steps (flagged verify path)
++
++1. **Run Agentkey API** (from the Agentkey repo):
++
++   ```bash
++   pnpm install && pnpm build
++   pnpm --filter @agentkey/api dev   # :8787
++   ```
++
++2. **Issue an agent and make a proof** (Agentkey quickstart or SDK):
++
++   ```ts
++   import { AgentkeyClient, agentKeys } from '@agentkey/sdk';
++   const client = new AgentkeyClient({ baseUrl: 'http://127.0.0.1:8787' });
++   const keys = agentKeys.generate();
++   const agent = await client.issue({ publicHandle: 'cs-demo', publicKey: keys.publicKey });
++   const proof = agentKeys.createProof({
++     agentId: agent.id,
++     challenge: 'countersign-pay',
++     privateKey: keys.privateKey,
++   });
++   // save agent.id + proof
++   ```
++
++3. **Start Countersign gateway** with the gate on, binding your ERC-8004 agent (e.g. hosted `2066`) to that Agentkey id:
++
++   ```bash
++   export AGENTKEY_VERIFY_ENABLED=true
++   export AGENTKEY_BASE_URL=http://127.0.0.1:8787
++   export AGENTKEY_BINDINGS='{"2066":"ak_…"}'   # your issued id
++   # …plus the usual gateway env (DATABASE_URL, RELAYER_PRIVATE_KEYS, …)
++   pnpm --filter @countersign/gateway dev
++   ```
++
++4. **Pay with an Agentkey proof** on the submission (in addition to the usual EIP-712 `agentSig`):
++
++   ```json
++   {
++     "account": "0x…",
++     "vault": "0x…",
++     "payment": { "amount": "1000", "invoiceHash": "0x…", "payTo": "0x…", "deadline": 1791400000 },
++     "agentSig": "0x…",
++     "agentkey": { "proof": "{\"challenge\":\"countersign-pay\",\"signature\":\"…\"}" }
++   }
++   ```
++
++   Or pass `"agentkey": { "id": "ak_…", "proof": "…" }` if you skip `AGENTKEY_BINDINGS`.
++
++5. **Fail-closed check**: stop the Agentkey API (or send a bad proof). The same `POST /v1/payments` returns **403** with `error: "agentkey_verify_failed"` and `status: "error"` (or `invalid`) — payment is not created.
++
++With the flag **off**, behaviour is unchanged: no Agentkey call, demos work as before.
++
++## MCP
++
++MCP `pay_invoice` / `pay_invoices` hit the same gateway routes. When the gate is on, the client must include `agentkey` on the payment body the SDK/gateway accepts (extend the tool input or pass proof via your agent’s pay path). The contract security model is unchanged: vaults still enforce suppliers, caps, and checker/owner signatures.
+diff --git a/packages/agentkey-bridge/package.json b/packages/agentkey-bridge/package.json
+new file mode 100644
+index 0000000..c980eaf
+--- /dev/null
++++ b/packages/agentkey-bridge/package.json
+@@ -0,0 +1,16 @@
++{
++  "name": "@countersign/agentkey-bridge",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "exports": {
++    ".": "./src/index.ts"
++  },
++  "scripts": {
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@agentkey/sdk": "github:Rosh2403/AgentKey#main&path:packages/sdk"
++  },
++  "sideEffects": false
++}
+diff --git a/packages/agentkey-bridge/src/authorize.ts b/packages/agentkey-bridge/src/authorize.ts
+new file mode 100644
+index 0000000..fc305a6
+--- /dev/null
++++ b/packages/agentkey-bridge/src/authorize.ts
+@@ -0,0 +1,84 @@
++import { AgentkeyClient, type VerifyResult, type VerifyStatus } from '@agentkey/sdk';
++
++/**
++ * Agentkey = who. Countersign = may this agent pay.
++ *
++ * Before treating an agent as authorized to pay, call Agentkey `verify`.
++ * Only `status: "valid"` authorizes. Transport / parse / crypto failures and
++ * every other status fail closed — never soft-allow on error.
++ */
++
++export type AuthorizeInput = {
++  /** Agentkey agent id (ak_…). */
++  agentkeyId: string;
++  /** JSON ownership proof for Agentkey verify. */
++  proof: string;
++  /** Optional context forwarded to Agentkey (e.g. payment id / challenge). */
++  context?: Record<string, unknown>;
++};
++
++export type AuthorizeOk = { ok: true; result: VerifyResult };
++export type AuthorizeDenied = {
++  ok: false;
++  status: VerifyStatus;
++  reason: string;
++  result: VerifyResult;
++};
++
++export type AuthorizeOutcome = AuthorizeOk | AuthorizeDenied;
++
++export type AgentkeyVerifier = Pick<AgentkeyClient, 'verify'>;
++
++/**
++ * Call Agentkey verify and authorize only on `valid`.
++ * Fail closed on every other outcome, including transport `error`.
++ */
++export async function assertAuthorizedToPay(
++  client: AgentkeyVerifier,
++  input: AuthorizeInput,
++): Promise<AuthorizeOutcome> {
++  if (!input.agentkeyId?.trim()) {
++    return denied('error', 'missing agentkey id', {
++      status: 'error',
++      reason: 'missing agentkey id',
++    });
++  }
++  if (!input.proof?.trim()) {
++    return denied('error', 'missing agentkey proof', {
++      status: 'error',
++      reason: 'missing agentkey proof',
++    });
++  }
++
++  let result: VerifyResult;
++  try {
++    result = await client.verify({
++      agentId: input.agentkeyId,
++      proof: input.proof,
++      ...(input.context === undefined ? {} : { context: input.context }),
++    });
++  } catch (err) {
++    // SDK already fail-closes transport into status:error; this is a last-resort belt.
++    const reason = err instanceof Error ? err.message : 'verify threw';
++    return denied('error', reason, { status: 'error', reason });
++  }
++
++  if (result.status === 'valid') {
++    return { ok: true, result };
++  }
++
++  return denied(
++    result.status,
++    result.reason?.trim() || `agentkey verify status: ${result.status}`,
++    result,
++  );
++}
++
++function denied(status: VerifyStatus, reason: string, result: VerifyResult): AuthorizeDenied {
++  return { ok: false, status, reason, result };
++}
++
++/** True only when Agentkey said `valid`. Anything else is a deny. */
++export function isAuthorized(outcome: AuthorizeOutcome): outcome is AuthorizeOk {
++  return outcome.ok;
++}
+diff --git a/packages/agentkey-bridge/src/bindings.ts b/packages/agentkey-bridge/src/bindings.ts
+new file mode 100644
+index 0000000..6b18337
+--- /dev/null
++++ b/packages/agentkey-bridge/src/bindings.ts
+@@ -0,0 +1,41 @@
++/**
++ * Map Countersign / ERC-8004 agent ids → Agentkey agent ids.
++ *
++ * Env `AGENTKEY_BINDINGS` is a JSON object, e.g.
++ *   {"2066":"ak_hosted_abc","2067":"ak_demo_xyz"}
++ */
++
++export type AgentkeyBindings = ReadonlyMap<string, string>;
++
++export function parseBindings(raw: string | undefined): AgentkeyBindings {
++  if (raw === undefined || raw.trim() === '') return new Map();
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(raw) as unknown;
++  } catch {
++    throw new Error('AGENTKEY_BINDINGS must be JSON object of erc8004AgentId → agentkeyId');
++  }
++  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
++    throw new Error('AGENTKEY_BINDINGS must be a JSON object');
++  }
++  const map = new Map<string, string>();
++  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
++    if (typeof v !== 'string' || !v.trim()) {
++      throw new Error(`AGENTKEY_BINDINGS[${k}] must be a non-empty Agentkey id string`);
++    }
++    map.set(k.trim(), v.trim());
++  }
++  return map;
++}
++
++/** Resolve Agentkey id from an ERC-8004 agent id, then an optional explicit override. */
++export function resolveAgentkeyId(
++  bindings: AgentkeyBindings,
++  erc8004AgentId: string | null | undefined,
++  explicit?: string | null,
++): string | undefined {
++  if (explicit?.trim()) return explicit.trim();
++  if (erc8004AgentId === undefined || erc8004AgentId === null || erc8004AgentId === '')
++    return undefined;
++  return bindings.get(erc8004AgentId);
++}
+diff --git a/packages/agentkey-bridge/src/config.ts b/packages/agentkey-bridge/src/config.ts
+new file mode 100644
+index 0000000..d82403b
+--- /dev/null
++++ b/packages/agentkey-bridge/src/config.ts
+@@ -0,0 +1,55 @@
++import { AgentkeyClient } from '@agentkey/sdk';
++import { parseBindings, type AgentkeyBindings } from './bindings.js';
++
++/**
++ * Optional Agentkey verify gate for Countersign payment paths.
++ * Off by default so existing testnet demos keep working.
++ *
++ * Env:
++ * - AGENTKEY_VERIFY_ENABLED=true|1|yes
++ * - AGENTKEY_BASE_URL=https://… (required when enabled)
++ * - AGENTKEY_BINDINGS={"2066":"ak_…"} (ERC-8004 id → Agentkey id)
++ * - AGENTKEY_ACCESS_TOKEN=… (optional bearer for private resolve; not required for verify)
++ */
++
++export type AgentkeyGateConfig = {
++  enabled: boolean;
++  baseUrl?: string;
++  bindings: AgentkeyBindings;
++  accessToken?: string;
++};
++
++export function isAgentkeyVerifyEnabled(
++  source: Record<string, string | undefined> = process.env,
++): boolean {
++  const v = source.AGENTKEY_VERIFY_ENABLED?.trim().toLowerCase();
++  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
++}
++
++export function loadAgentkeyGateConfig(
++  source: Record<string, string | undefined> = process.env,
++): AgentkeyGateConfig {
++  const enabled = isAgentkeyVerifyEnabled(source);
++  const baseUrl = source.AGENTKEY_BASE_URL?.trim().replace(/\/$/, '');
++  const accessToken = source.AGENTKEY_ACCESS_TOKEN?.trim();
++  const bindings = parseBindings(source.AGENTKEY_BINDINGS);
++
++  if (enabled && !baseUrl) {
++    throw new Error('AGENTKEY_VERIFY_ENABLED requires AGENTKEY_BASE_URL');
++  }
++
++  return {
++    enabled,
++    ...(baseUrl ? { baseUrl } : {}),
++    bindings,
++    ...(accessToken ? { accessToken } : {}),
++  };
++}
++
++export function createAgentkeyClient(config: AgentkeyGateConfig): AgentkeyClient | undefined {
++  if (!config.enabled || !config.baseUrl) return undefined;
++  return new AgentkeyClient({
++    baseUrl: config.baseUrl,
++    ...(config.accessToken ? { accessToken: config.accessToken } : {}),
++  });
++}
+diff --git a/packages/agentkey-bridge/src/index.ts b/packages/agentkey-bridge/src/index.ts
+new file mode 100644
+index 0000000..e1d3473
+--- /dev/null
++++ b/packages/agentkey-bridge/src/index.ts
+@@ -0,0 +1,36 @@
++/**
++ * Thin Agentkey → Countersign bridge.
++ *
++ * Agentkey answers "who is this agent?". Countersign answers "may this agent pay?".
++ * When `AGENTKEY_VERIFY_ENABLED` is on, the gateway calls Agentkey verify (fail closed)
++ * before accepting a payment from a mapped ERC-8004 agent.
++ */
++
++export {
++  assertAuthorizedToPay,
++  isAuthorized,
++  type AgentkeyVerifier,
++  type AuthorizeDenied,
++  type AuthorizeInput,
++  type AuthorizeOk,
++  type AuthorizeOutcome,
++} from './authorize.js';
++
++export { parseBindings, resolveAgentkeyId, type AgentkeyBindings } from './bindings.js';
++
++export {
++  createAgentkeyClient,
++  isAgentkeyVerifyEnabled,
++  loadAgentkeyGateConfig,
++  type AgentkeyGateConfig,
++} from './config.js';
++
++export {
++  AgentkeyClient,
++  agentKeys,
++  failClosed,
++  type AgentId,
++  type VerifyRequest,
++  type VerifyResult,
++  type VerifyStatus,
++} from '@agentkey/sdk';
+diff --git a/packages/agentkey-bridge/test/authorize.test.ts b/packages/agentkey-bridge/test/authorize.test.ts
+new file mode 100644
+index 0000000..7a3a5d6
+--- /dev/null
++++ b/packages/agentkey-bridge/test/authorize.test.ts
+@@ -0,0 +1,152 @@
++import { describe, expect, it } from 'vitest';
++import {
++  assertAuthorizedToPay,
++  isAuthorized,
++  type AgentkeyVerifier,
++  type AuthorizeOutcome,
++} from '../src/authorize.js';
++import { parseBindings, resolveAgentkeyId } from '../src/bindings.js';
++import { isAgentkeyVerifyEnabled, loadAgentkeyGateConfig } from '../src/config.js';
++import type { VerifyResult } from '@agentkey/sdk';
++
++function stub(
++  result: VerifyResult | (() => Promise<VerifyResult>) | (() => never),
++): AgentkeyVerifier {
++  return {
++    verify: async () => {
++      if (typeof result === 'function') return result();
++      return result;
++    },
++  };
++}
++
++describe('assertAuthorizedToPay (fail closed)', () => {
++  it('authorizes only when Agentkey returns valid', async () => {
++    const outcome = await assertAuthorizedToPay(stub({ status: 'valid' }), {
++      agentkeyId: 'ak_demo',
++      proof: '{"challenge":"c","signature":"ab"}',
++    });
++    expect(isAuthorized(outcome)).toBe(true);
++    expect(outcome.ok).toBe(true);
++  });
++
++  it('denies on invalid — never soft-allows', async () => {
++    const outcome = await assertAuthorizedToPay(stub({ status: 'invalid', reason: 'bad sig' }), {
++      agentkeyId: 'ak_demo',
++      proof: '{}',
++    });
++    expectDenied(outcome, 'invalid', 'bad sig');
++  });
++
++  it('denies on unknown', async () => {
++    const outcome = await assertAuthorizedToPay(stub({ status: 'unknown', reason: 'not found' }), {
++      agentkeyId: 'ak_missing',
++      proof: '{}',
++    });
++    expectDenied(outcome, 'unknown', 'not found');
++  });
++
++  it('denies on revoked', async () => {
++    const outcome = await assertAuthorizedToPay(stub({ status: 'revoked', reason: 'revoked' }), {
++      agentkeyId: 'ak_revoked',
++      proof: '{}',
++    });
++    expectDenied(outcome, 'revoked', 'revoked');
++  });
++
++  it('denies on transport/error status (fail closed)', async () => {
++    const outcome = await assertAuthorizedToPay(stub({ status: 'error', reason: 'ECONNREFUSED' }), {
++      agentkeyId: 'ak_demo',
++      proof: '{}',
++    });
++    expectDenied(outcome, 'error', 'ECONNREFUSED');
++  });
++
++  it('denies when verify throws (fail closed belt)', async () => {
++    const outcome = await assertAuthorizedToPay(
++      {
++        verify: async () => {
++          throw new Error('network down');
++        },
++      },
++      { agentkeyId: 'ak_demo', proof: '{}' },
++    );
++    expectDenied(outcome, 'error', 'network down');
++  });
++
++  it('denies when agentkey id is missing', async () => {
++    const calls: unknown[] = [];
++    const outcome = await assertAuthorizedToPay(
++      {
++        verify: async (req) => {
++          calls.push(req);
++          return { status: 'valid' };
++        },
++      },
++      { agentkeyId: '  ', proof: '{}' },
++    );
++    expect(calls).toHaveLength(0);
++    expectDenied(outcome, 'error', 'missing agentkey id');
++  });
++
++  it('denies when proof is missing without calling verify', async () => {
++    const calls: unknown[] = [];
++    const outcome = await assertAuthorizedToPay(
++      {
++        verify: async (req) => {
++          calls.push(req);
++          return { status: 'valid' };
++        },
++      },
++      { agentkeyId: 'ak_demo', proof: '' },
++    );
++    expect(calls).toHaveLength(0);
++    expectDenied(outcome, 'error', 'missing agentkey proof');
++  });
++});
++
++describe('bindings', () => {
++  it('parses ERC-8004 → Agentkey map', () => {
++    const map = parseBindings('{"2066":"ak_hosted","2067":"ak_demo"}');
++    expect(resolveAgentkeyId(map, '2066')).toBe('ak_hosted');
++    expect(resolveAgentkeyId(map, '2067', 'ak_override')).toBe('ak_override');
++    expect(resolveAgentkeyId(map, '9999')).toBeUndefined();
++  });
++
++  it('rejects malformed bindings', () => {
++    expect(() => parseBindings('not-json')).toThrow(/JSON/);
++    expect(() => parseBindings('[]')).toThrow(/object/);
++    expect(() => parseBindings('{"2066":1}')).toThrow(/non-empty/);
++  });
++});
++
++describe('loadAgentkeyGateConfig', () => {
++  it('is off by default so demos keep working', () => {
++    expect(isAgentkeyVerifyEnabled({})).toBe(false);
++    expect(loadAgentkeyGateConfig({}).enabled).toBe(false);
++  });
++
++  it('requires base URL when enabled', () => {
++    expect(() => loadAgentkeyGateConfig({ AGENTKEY_VERIFY_ENABLED: 'true' })).toThrow(
++      /AGENTKEY_BASE_URL/,
++    );
++  });
++
++  it('loads enabled config', () => {
++    const cfg = loadAgentkeyGateConfig({
++      AGENTKEY_VERIFY_ENABLED: '1',
++      AGENTKEY_BASE_URL: 'http://127.0.0.1:8787/',
++      AGENTKEY_BINDINGS: '{"2066":"ak_x"}',
++    });
++    expect(cfg.enabled).toBe(true);
++    expect(cfg.baseUrl).toBe('http://127.0.0.1:8787');
++    expect(cfg.bindings.get('2066')).toBe('ak_x');
++  });
++});
++
++function expectDenied(outcome: AuthorizeOutcome, status: string, reasonPart: string): void {
++  expect(outcome.ok).toBe(false);
++  if (outcome.ok) return;
++  expect(outcome.status).toBe(status);
++  expect(outcome.reason).toContain(reasonPart);
++}
+diff --git a/packages/agentkey-bridge/tsconfig.json b/packages/agentkey-bridge/tsconfig.json
+new file mode 100644
+index 0000000..ca97e4e
+--- /dev/null
++++ b/packages/agentkey-bridge/tsconfig.json
+@@ -0,0 +1,7 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "noEmit": true
++  },
++  "include": ["src", "test"]
++}
+diff --git a/packages/sdk/src/client.ts b/packages/sdk/src/client.ts
+index 026911b..bfcc259 100644
+--- a/packages/sdk/src/client.ts
++++ b/packages/sdk/src/client.ts
+@@ -328,6 +328,7 @@ export class Countersign {
+       },
+       agentSig,
+       ...(invoice.document === undefined ? {} : { document: invoice.document }),
++      ...(invoice.agentkey === undefined ? {} : { agentkey: invoice.agentkey }),
+     };
+   }
+ 
+diff --git a/packages/sdk/src/types.ts b/packages/sdk/src/types.ts
+index b795713..535745a 100644
+--- a/packages/sdk/src/types.ts
++++ b/packages/sdk/src/types.ts
+@@ -150,6 +150,11 @@ export type Invoice = {
+    * text) or `{ html }` (the page). Without a document it can read, the payment waits for the owner.
+    */
+   document?: unknown;
++  /**
++   * Optional Agentkey ownership proof when the gateway has `AGENTKEY_VERIFY_ENABLED`.
++   * See docs/developers/agentkey.md.
++   */
++  agentkey?: { id?: string; proof: string };
+ };
+ 
+ /**
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index a75ed2d..c7c717d 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -302,6 +302,12 @@ importers:
+         specifier: 19.3.0
+         version: 19.3.0
+ 
++  packages/agentkey-bridge:
++    dependencies:
++      '@agentkey/sdk':
++        specifier: github:Rosh2403/AgentKey#main&path:packages/sdk
++        version: git+https://github.com/Rosh2403/AgentKey.git#b5c744b453dba8f840e0b954725f77341bff2376&path:packages/sdk
++
+   packages/chain:
+     dependencies:
+       viem:
+@@ -366,6 +372,9 @@ importers:
+ 
+   services/gateway:
+     dependencies:
++      '@countersign/agentkey-bridge':
++        specifier: workspace:*
++        version: link:../../packages/agentkey-bridge
+       '@countersign/chain':
+         specifier: workspace:*
+         version: link:../../packages/chain
+@@ -604,6 +613,11 @@ packages:
+   '@adraffy/ens-normalize@1.11.1':
+     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
+ 
++  '@agentkey/sdk@git+https://github.com/Rosh2403/AgentKey.git#b5c744b453dba8f840e0b954725f77341bff2376&path:packages/sdk':
++    resolution: {commit: b5c744b453dba8f840e0b954725f77341bff2376, path: packages/sdk, repo: https://github.com/Rosh2403/AgentKey.git, type: git}
++    version: 0.0.1
++    engines: {node: '>=20'}
++
+   '@ai-sdk/gateway@4.0.104':
+     resolution: {integrity: sha512-4lTyt8a4BMfVz4QGo+VO5odakmYMX5kq+xiRgdQGGY7o/jP2WSasp6LvIvYvt/lHzz1MfE+xKTOJhz7mMwjynA==}
+     engines: {node: '>=22'}
+@@ -3200,6 +3214,8 @@ snapshots:
+ 
+   '@adraffy/ens-normalize@1.11.1': {}
+ 
++  '@agentkey/sdk@git+https://github.com/Rosh2403/AgentKey.git#b5c744b453dba8f840e0b954725f77341bff2376&path:packages/sdk': {}
++
+   '@ai-sdk/gateway@4.0.104(zod@4.6.5)':
+     dependencies:
+       '@ai-sdk/provider': 4.0.22
+diff --git a/services/gateway/package.json b/services/gateway/package.json
+index 707d710..55ce755 100644
+--- a/services/gateway/package.json
++++ b/services/gateway/package.json
+@@ -28,6 +28,7 @@
+     "run-200": "tsx scripts/run-200.ts"
+   },
+   "dependencies": {
++    "@countersign/agentkey-bridge": "workspace:*",
+     "@countersign/chain": "workspace:*",
+     "@countersign/shared": "workspace:*",
+     "@hono/node-server": "2.1.3",
+diff --git a/services/gateway/src/agents/agentkey-gate.ts b/services/gateway/src/agents/agentkey-gate.ts
+new file mode 100644
+index 0000000..637b2a8
+--- /dev/null
++++ b/services/gateway/src/agents/agentkey-gate.ts
+@@ -0,0 +1,79 @@
++import {
++  assertAuthorizedToPay,
++  resolveAgentkeyId,
++  type AgentkeyBindings,
++  type AgentkeyVerifier,
++} from '@countersign/agentkey-bridge';
++import type { AgentDirectory } from './identity.js';
++
++/**
++ * Optional Agentkey verify gate on the payment path.
++ * When enabled, only agents that Agentkey verifies as `valid` may pay.
++ * Fail closed on every non-valid outcome (including transport error).
++ */
++
++export type AgentkeyGate = {
++  client: AgentkeyVerifier;
++  bindings: AgentkeyBindings;
++  agents?: AgentDirectory;
++};
++
++export type AgentkeyProofInput = {
++  /** Optional explicit Agentkey id; otherwise looked up from ERC-8004 via bindings. */
++  id?: string | undefined;
++  /** JSON ownership proof for Agentkey `/v1/verify`. */
++  proof: string;
++};
++
++export type GateDenial = {
++  error: 'agentkey_verify_failed';
++  status: string;
++  reason: string;
++  agentkeyId: string | null;
++  erc8004AgentId: string | null;
++};
++
++/**
++ * Authorize a payment signer through Agentkey. Returns a denial payload, or `null` when allowed.
++ */
++export async function authorizePaymentAgent(
++  gate: AgentkeyGate,
++  input: {
++    agentAddress: string | null;
++    agentkey?: AgentkeyProofInput;
++  },
++): Promise<GateDenial | null> {
++  const erc8004AgentId = gate.agents?.byAddress(input.agentAddress)?.agentId ?? null;
++  const agentkeyId = resolveAgentkeyId(gate.bindings, erc8004AgentId, input.agentkey?.id);
++
++  if (!agentkeyId) {
++    return {
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      reason:
++        'no Agentkey binding for this ERC-8004 agent; set AGENTKEY_BINDINGS or pass agentkey.id',
++      agentkeyId: null,
++      erc8004AgentId,
++    };
++  }
++
++  const proof = input.agentkey?.proof ?? '';
++  const outcome = await assertAuthorizedToPay(gate.client, {
++    agentkeyId,
++    proof,
++    context: {
++      erc8004AgentId,
++      agentAddress: input.agentAddress,
++    },
++  });
++
++  if (outcome.ok) return null;
++
++  return {
++    error: 'agentkey_verify_failed',
++    status: outcome.status,
++    reason: outcome.reason,
++    agentkeyId,
++    erc8004AgentId,
++  };
++}
+diff --git a/services/gateway/src/api/schemas.ts b/services/gateway/src/api/schemas.ts
+index 28c4b02..2650ce0 100644
+--- a/services/gateway/src/api/schemas.ts
++++ b/services/gateway/src/api/schemas.ts
+@@ -47,6 +47,20 @@ export const payment = z
+   })
+   .openapi('Payment');
+ 
++/** Optional Agentkey ownership proof when `AGENTKEY_VERIFY_ENABLED` is on. */
++export const agentkeyProof = z
++  .object({
++    id: z.string().min(1).optional().openapi({
++      description:
++        'Agentkey agent id (ak_…). Optional when AGENTKEY_BINDINGS maps this ERC-8004 agent.',
++    }),
++    proof: z
++      .string()
++      .min(1)
++      .openapi({ description: 'JSON ownership proof for Agentkey POST /v1/verify' }),
++  })
++  .openapi('AgentkeyProof');
++
+ export const submission = z
+   .object({
+     vault: address.openapi({ description: "The order's vault" }),
+@@ -58,6 +72,10 @@ export const submission = z
+       .unknown()
+       .optional()
+       .openapi({ description: 'What the checker reads: the invoice source or its fields' }),
++    agentkey: agentkeyProof.optional().openapi({
++      description:
++        'Required when AGENTKEY_VERIFY_ENABLED: Agentkey verify must return valid before pay',
++    }),
+   })
+   .openapi('Submission');
+ 
+@@ -189,6 +207,19 @@ export const checkVerdict = z
+   })
+   .openapi('CheckVerdict');
+ 
++/** 403 when AGENTKEY_VERIFY_ENABLED and Agentkey verify did not return valid (fail closed). */
++export const agentkeyVerifyError = z
++  .object({
++    error: z.literal('agentkey_verify_failed'),
++    status: z.string().openapi({
++      description: 'Agentkey verify status: invalid | unknown | revoked | error',
++    }),
++    reason: z.string(),
++    agentkeyId: z.string().nullable(),
++    erc8004AgentId: z.string().nullable(),
++  })
++  .openapi('AgentkeyVerifyError');
++
+ export const apiError = z
+   .object({
+     error: z.string().openapi({
+diff --git a/services/gateway/src/app.ts b/services/gateway/src/app.ts
+index 1d15fa5..7250584 100644
+--- a/services/gateway/src/app.ts
++++ b/services/gateway/src/app.ts
+@@ -28,6 +28,11 @@ import type { Advisor } from './advice.js';
+ import type { DecisionRecorder } from './decisions.js';
+ import { registerWhatsAppRoutes, type WhatsAppRouteDeps } from './api/whatsapp.js';
+ import { recoverAgent, type AgentDirectory } from './agents/identity.js';
++import {
++  authorizePaymentAgent,
++  type AgentkeyGate,
++  type AgentkeyProofInput,
++} from './agents/agentkey-gate.js';
+ import { supplierNameOf } from './suppliers.js';
+ import { registerAgentRoutes } from './api/agents.js';
+ import type { PaymentRequestRow } from './db/schema.js';
+@@ -37,6 +42,7 @@ import { requestId, runId } from './ids.js';
+ import {
+   accountParam,
+   address,
++  agentkeyVerifyError,
+   apiError,
+   bytes32,
+   checkVerdict,
+@@ -79,6 +85,12 @@ export type AppDeps = {
+   pause?: PauseDeps;
+   /** ERC-8004 agents named on payments (Slice 19); without it, agents show by address only. */
+   agents?: AgentDirectory;
++  /**
++   * Optional Agentkey verify gate (Track 04 bridge). When set, POST /v1/payments and /v1/runs
++   * call Agentkey verify before accepting a payment — fail closed; never soft-allow on error.
++   * Off unless AGENTKEY_VERIFY_ENABLED is set at process start.
++   */
++  agentkey?: AgentkeyGate;
+   /** WhatsApp (Slice 14); without it its routes do not exist and nothing is sent. */
+   whatsapp?: WhatsAppRouteDeps;
+   /** Slice 15: suppliers' websites, shown on changed-address holds and checked on payments (D21). */
+@@ -171,6 +183,10 @@ const submitPayment = createRoute({
+   responses: {
+     201: json(created, 'A new request'),
+     200: json(created, 'The same invoice was submitted before: the first request'),
++    403: json(
++      agentkeyVerifyError,
++      'Agentkey verify failed (fail closed); payment not created. Only when AGENTKEY_VERIFY_ENABLED.',
++    ),
+     ...errors,
+   },
+ });
+@@ -190,7 +206,14 @@ const submitRun = createRoute({
+       },
+     },
+   },
+-  responses: { 201: json(runCreated, 'The run and each request’s first status'), ...errors },
++  responses: {
++    201: json(runCreated, 'The run and each request’s first status'),
++    403: json(
++      agentkeyVerifyError,
++      'Agentkey verify failed (fail closed); run not created. Only when AGENTKEY_VERIFY_ENABLED.',
++    ),
++    ...errors,
++  },
+ });
+ 
+ const checkPayment = createRoute({
+@@ -327,6 +350,19 @@ const health = createRoute({
+   },
+ });
+ 
++/** When the Agentkey gate is on, verify before treating the agent as authorized to pay. */
++async function denyUnlessAgentkey(
++  deps: AppDeps,
++  agentAddress: Address | null,
++  agentkey: AgentkeyProofInput | undefined,
++) {
++  if (!deps.agentkey) return null;
++  return authorizePaymentAgent(
++    { ...deps.agentkey, ...(deps.agents ? { agents: deps.agents } : {}) },
++    { agentAddress, ...(agentkey ? { agentkey } : {}) },
++  );
++}
++
+ export function createApp(deps: AppDeps) {
+   const { store, chain } = deps;
+   const publicUrl = (deps.publicUrl ?? 'http://localhost:8787').replace(/\/$/, '');
+@@ -433,6 +469,9 @@ export function createApp(deps: AppDeps) {
+   app.openapi(submitPayment, async (c) => {
+     const body = c.req.valid('json');
+     if (!mayUse(c, body.account)) return c.json(wrongAccount, 403);
++    const agentAddress = await agentOf(body.vault, body.payment, body.agentSig);
++    const denied = await denyUnlessAgentkey(deps, agentAddress, body.agentkey);
++    if (denied) return c.json(denied, 403);
+     const { request, created: isNew } = await store.createRequest({
+       id: requestId(body.account, body.vault, body.payment.invoiceHash as Hex),
+       account: body.account,
+@@ -442,7 +481,7 @@ export function createApp(deps: AppDeps) {
+       amount: BigInt(body.payment.amount),
+       deadline: body.payment.deadline,
+       agentSig: body.agentSig as Hex,
+-      agentAddress: await agentOf(body.vault, body.payment, body.agentSig),
++      agentAddress,
+       document: body.document,
+     });
+     const result = { created: isNew, request: view(request) };
+@@ -454,6 +493,12 @@ export function createApp(deps: AppDeps) {
+     if (!mayUse(c, account)) return c.json(wrongAccount, 403);
+     const ids = payments.map((p) => requestId(account, p.vault, p.payment.invoiceHash as Hex));
+     const id = runId(account, ids);
++    // Gate every payment in the run before creating any request (fail closed).
++    for (const p of payments) {
++      const agentAddress = await agentOf(p.vault, p.payment, p.agentSig);
++      const denied = await denyUnlessAgentkey(deps, agentAddress, p.agentkey);
++      if (denied) return c.json(denied, 403);
++    }
+     await store.createRun(id, account, payments.length);
+     const requests = [];
+     for (const [i, p] of payments.entries()) {
+diff --git a/services/gateway/src/main.ts b/services/gateway/src/main.ts
+index 79c85cd..7d546fb 100644
+--- a/services/gateway/src/main.ts
++++ b/services/gateway/src/main.ts
+@@ -23,11 +23,14 @@ import { Workers } from './workers.js';
+ import { KALIBRE_FILE, WebsiteProofs } from './proofs/website.js';
+ import { KALIBRE } from './demo/plan.js';
+ import { PrimusProver, registryRecorder } from './proofs/primus.js';
++import { createAgentkeyClient, loadAgentkeyGateConfig } from '@countersign/agentkey-bridge';
+ 
+ const settings = loadSettings();
+ const chainId = settings.MONAD_CHAIN_ID;
+ const judge = judgeMode(settings); // throws at start if only one of its keys is set
+ const checking = checkerMode(settings); // likewise for the checker service's three settings
++const agentkeyConfig = loadAgentkeyGateConfig(); // off unless AGENTKEY_VERIFY_ENABLED
++const agentkeyClient = createAgentkeyClient(agentkeyConfig);
+ 
+ /**
+  * Without the checker service (Slice 10) the stand-in checker releases every payment, except that
+@@ -242,6 +245,8 @@ console.log(
+   `whatsapp ${wa ? `on (${wa.template ? `template ${wa.template.name}` : 'no template: only within 24 hours'})` : 'off'}`,
+ );
+ 
++console.log(`agentkey verify ${agentkeyConfig.enabled ? `on (${agentkeyConfig.baseUrl})` : 'off'}`);
++
+ const app = createApp({
+   agents,
+   websites,
+@@ -251,6 +256,9 @@ const app = createApp({
+   ...(whatsapp && wa
+     ? { whatsapp: { notifier: whatsapp, verifyToken: wa.verifyToken, appSecret: wa.appSecret } }
+     : {}),
++  ...(agentkeyClient
++    ? { agentkey: { client: agentkeyClient, bindings: agentkeyConfig.bindings, agents } }
++    : {}),
+   store,
+   chain: monad,
+   checker,
+@@ -284,6 +292,14 @@ const app = createApp({
+     whatsapp: wa ? { template: wa.template?.name ?? null } : null,
+     // Suppliers' website proofs (Slice 15): Primus on or off, and the registry on Monad.
+     proofs: { primus: primus !== undefined, registry: deployments.supplierProofs },
++    // Agentkey verify gate (Track 04 bridge); off keeps existing demos working.
++    agentkey: agentkeyConfig.enabled
++      ? {
++          enabled: true,
++          baseUrl: agentkeyConfig.baseUrl ?? null,
++          bindings: agentkeyConfig.bindings.size,
++        }
++      : { enabled: false },
+   }),
+ });
+ const server = serve({ fetch: app.fetch, port: settings.PORT }, (info) => {
+diff --git a/services/gateway/test/agentkey-gate.test.ts b/services/gateway/test/agentkey-gate.test.ts
+new file mode 100644
+index 0000000..4c1dab5
+--- /dev/null
++++ b/services/gateway/test/agentkey-gate.test.ts
+@@ -0,0 +1,113 @@
++import { describe, expect, it } from 'vitest';
++import { getAddress, type Address } from 'viem';
++import { IDENTITY_REGISTRY_TESTNET } from '@countersign/shared';
++import type { VerifyResult } from '@countersign/agentkey-bridge';
++import { AgentDirectory, type IdentityChain } from '../src/agents/identity.js';
++import { authorizePaymentAgent } from '../src/agents/agentkey-gate.js';
++
++const WALLET = getAddress('0x0f92A10b64B4A177cB1E090edC317C4202f71DC3');
++
++async function directoryWith(wallet: Address, agentId = 2066n): Promise<AgentDirectory> {
++  const identity: IdentityChain = {
++    agentWallet: (id) =>
++      id === agentId ? Promise.resolve(wallet) : Promise.reject(new Error('missing')),
++  };
++  const dir = new AgentDirectory(identity, IDENTITY_REGISTRY_TESTNET, 10143);
++  const added = await dir.add(
++    {
++      upsertAgent: async (row) => ({
++        agentId: row.agentId,
++        registry: row.registry,
++        wallet: row.wallet,
++        addedAt: new Date(),
++      }),
++    },
++    agentId,
++  );
++  expect(added?.wallet).toBe(wallet);
++  return dir;
++}
++
++function client(result: VerifyResult) {
++  return {
++    verify: async (): Promise<VerifyResult> => result,
++  };
++}
++
++describe('authorizePaymentAgent (gateway choke point)', () => {
++  it('allows only when Agentkey returns valid', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        agentkey: { proof: '{"challenge":"c","signature":"ab"}' },
++      },
++    );
++    expect(denial).toBeNull();
++  });
++
++  it('fail-closed: transport error denies payment (never soft-allows)', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'error', reason: 'fetch failed' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        agentkey: { proof: '{}' },
++      },
++    );
++    expect(denial).toEqual({
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      reason: 'fetch failed',
++      agentkeyId: 'ak_hosted',
++      erc8004AgentId: '2066',
++    });
++  });
++
++  it('fail-closed: invalid proof denies', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'invalid', reason: 'bad signature' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      { agentAddress: WALLET, agentkey: { proof: '{}' } },
++    );
++    expect(denial?.status).toBe('invalid');
++    expect(denial?.error).toBe('agentkey_verify_failed');
++  });
++
++  it('denies when there is no binding and no explicit id', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map(),
++        agents: await directoryWith(WALLET),
++      },
++      { agentAddress: WALLET, agentkey: { proof: '{}' } },
++    );
++    expect(denial?.status).toBe('error');
++    expect(denial?.reason).toMatch(/no Agentkey binding/);
++  });
++
++  it('uses explicit agentkey.id when bindings are empty', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map(),
++      },
++      {
++        agentAddress: WALLET,
++        agentkey: { id: 'ak_explicit', proof: '{}' },
++      },
++    );
++    expect(denial).toBeNull();
++  });
++});
+diff --git a/services/mcp/lib/tools.ts b/services/mcp/lib/tools.ts
+index 3ecb198..56e2337 100644
+--- a/services/mcp/lib/tools.ts
++++ b/services/mcp/lib/tools.ts
+@@ -34,6 +34,18 @@ const invoiceInput = {
+     .describe(
+       'The invoice exactly as you read it: all of its text. The checker reads it itself and compares it with the order; without it, or if it differs from the fields above, the payment waits for the owner',
+     ),
++  agentkeyProof: z
++    .string()
++    .min(1)
++    .optional()
++    .describe(
++      'When the gateway has AGENTKEY_VERIFY_ENABLED: JSON Agentkey ownership proof. Fail-closed — pay is refused unless Agentkey verify returns valid.',
++    ),
++  agentkeyId: z
++    .string()
++    .min(1)
++    .optional()
++    .describe('Optional Agentkey agent id when AGENTKEY_BINDINGS does not map this ERC-8004 agent'),
+ };
+ 
+ /**
+@@ -206,6 +218,8 @@ type InvoiceArgs = {
+   amount: string | number;
+   payTo: string;
+   invoiceText?: string | undefined;
++  agentkeyProof?: string | undefined;
++  agentkeyId?: string | undefined;
+ };
+ 
+ const payInput = (a: InvoiceArgs) => ({
+@@ -215,6 +229,14 @@ const payInput = (a: InvoiceArgs) => ({
+     amount: amountText(a.amount),
+     payTo: a.payTo as `0x${string}`,
+     ...(a.invoiceText === undefined ? {} : { document: { text: a.invoiceText } }),
++    ...(a.agentkeyProof === undefined
++      ? {}
++      : {
++          agentkey: {
++            proof: a.agentkeyProof,
++            ...(a.agentkeyId === undefined ? {} : { id: a.agentkeyId }),
++          },
++        }),
+   },
+ });
+ 
+-- 
+2.43.0
+
