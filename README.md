@@ -145,6 +145,33 @@ pnpm test
 
 Optional dashboard: `pnpm --filter @agentkey/dashboard dev`.
 
+## Monad track
+
+Agentkey targets Monad’s **trust / data ownership / AI-native primitives** track: a composable identity protocol (not a consumer app). Judge-facing narrative: **[PITCH.md](./PITCH.md)**.
+
+### Building blocks
+
+| Block | Role for Agentkey | Status |
+| --- | --- | --- |
+| **ERC-8004** | Trustless agent registry / discovery so anchoring is not Agentkey-only | **Planned** — custom `AgentkeyRegistry.sol` ships; ERC-8004 adapter or dual-write is next (contracts lane) |
+| **Native P256 / WebAuthn** | Optional human-controller binding to an Agent ID | **Deferred** — additive path; Ed25519 remains agent keys |
+| **BTX** | Encrypted mempool for private-subject commit/revoke txs | **Deferred** — relevance for dual IDs; no prototype claimed |
+
+Product verify stays **off-chain and fail-closed** with `AGENTKEY_ANCHOR_ENABLED=false` — no RPC required. On-chain commit is optional auditability only.
+
+### Gaps we own
+
+- **Capture narrative:** single root issuer is **bootstrap**, not the end state — path is ERC-8004 discovery + later multi-issuer verify without rewriting the typed enum (see [PITCH.md](./PITCH.md)).
+- **Registry alignment:** custom Solidity registry today ≠ ERC-8004; mapping/dual-write is the highest-leverage Monad-native gap.
+- **DX / demo:** keep clone → issue → verify ≤5 minutes; dashboard only as a short demo of the primitive.
+
+### Next 30 / 90 days
+
+| Horizon | Focus |
+| --- | --- |
+| **30 days** | ERC-8004 touchpoint + tests; Monad-relevant demo (issue → optional registry → resolve → verify); DX quickstart; CI green / known-good SHA |
+| **90 days** | Optional WebAuthn→P256 experiment; BTX write-up; federated-issuer sketch; early integration partner conversations |
+
 ## Contributing
 
 - Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, …
