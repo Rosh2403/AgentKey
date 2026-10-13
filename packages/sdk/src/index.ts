@@ -1,16 +1,16 @@
-import type {
-  AgentId,
-  IssueRequest,
-  ResolveRequest,
-  VerifyRequest,
-  VerifyResult,
-} from "@agentkey/protocol";
-import { failClosed } from "@agentkey/protocol";
+import {
+  failClosed,
+  type AgentId,
+  type IssueRequest,
+  type ResolveRequest,
+  type VerifyRequest,
+  type VerifyResult,
+} from "./wire.js";
 import {
   createOwnershipProof,
   generateKeyPair,
   type KeyPairHex,
-} from "@agentkey/crypto";
+} from "./keys.js";
 
 export interface AgentkeyClientOptions {
   baseUrl: string;
@@ -21,6 +21,9 @@ export interface AgentkeyClientOptions {
 /**
  * Minimal builder-facing client for issue / resolve / verify.
  * Verify transport failures fail closed (`status: "error"`).
+ *
+ * Zero workspace deps — install from git:
+ *   `"@agentkey/sdk": "github:Rosh2403/AgentKey#main&path:packages/sdk"`
  */
 export class AgentkeyClient {
   constructor(private readonly options: AgentkeyClientOptions) {}
@@ -111,3 +114,6 @@ export type {
   VerifyResult,
   KeyPairHex,
 };
+
+export type { VerifyStatus, AgentStatus } from "./wire.js";
+export { failClosed } from "./wire.js";

@@ -1,26 +1,37 @@
 {
   "name": "@agentkey/sdk",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
+  "description": "Agentkey HTTP client (issue / resolve / verify). Fail-closed verify. Installable from git without npm publish.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "src",
+    "dist",
+    "package.json",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test src/**/*.test.ts"
   },
-  "dependencies": {
-    "@agentkey/crypto": "workspace:*",
-    "@agentkey/protocol": "workspace:*"
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rosh2403/AgentKey.git",
+    "directory": "packages/sdk"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
