@@ -1,0 +1,1166 @@
+From b0d150c9470fefdb8c90a8a185392b6972edd8f1 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Wed, 14 Oct 2026 02:13:50 +0000
+Subject: [PATCH] fix(agentkey-bridge): bind proofs to payments and honor
+ bindings
+
+Make AGENTKEY_BINDINGS authoritative (client agentkey.id mismatch fails closed),
+require countersign-pay-v1 payment-bound challenges with TTL, and expose
+agentkey.integrated vs enabled on /health with a startup warn when the gate is off.
+---
+ .env.example                                  |   5 +-
+ docs/developers/agentkey.md                   |  78 +++++--
+ packages/agentkey-bridge/src/bindings.ts      |  56 ++++-
+ packages/agentkey-bridge/src/challenge.ts     | 202 ++++++++++++++++++
+ packages/agentkey-bridge/src/config.ts        |   5 +-
+ packages/agentkey-bridge/src/index.ts         |  29 ++-
+ .../agentkey-bridge/test/authorize.test.ts    | 122 ++++++++++-
+ packages/sdk/src/types.ts                     |   2 +
+ services/gateway/src/agents/agentkey-gate.ts  |  51 ++++-
+ services/gateway/src/api/schemas.ts           |  10 +-
+ services/gateway/src/app.ts                   |  25 ++-
+ services/gateway/src/main.ts                  |  31 ++-
+ services/gateway/test/agentkey-gate.test.ts   | 148 ++++++++++++-
+ services/mcp/lib/tools.ts                     |   6 +-
+ 14 files changed, 713 insertions(+), 57 deletions(-)
+ create mode 100644 packages/agentkey-bridge/src/challenge.ts
+
+diff --git a/.env.example b/.env.example
+index ba2c260..03cb119 100644
+--- a/.env.example
++++ b/.env.example
+@@ -59,10 +59,13 @@ DEMO_AGENT_PRIVATE_KEY=
+ DEMO_ACCOUNTS_PER_DAY=
+ 
+ # Agentkey verify gate (Track 04 bridge). Off by default so testnet demos keep working.
++# Bridge code is always integrated; integrated ≠ enabled — production must set this true.
++# GET /health reports agentkey.integrated + agentkey.enabled.
+ # When on, POST /v1/payments and /v1/runs call Agentkey verify (fail closed) before pay.
++# Proofs must use payment-bound challenges (countersign-pay-v1:…); see docs/developers/agentkey.md.
+ # AGENTKEY_VERIFY_ENABLED=true
+ # AGENTKEY_BASE_URL=http://127.0.0.1:8787
+-# ERC-8004 agent id → Agentkey agent id, e.g. {"2066":"ak_hosted"}
++# ERC-8004 agent id → Agentkey agent id (authoritative; client agentkey.id cannot override)
+ # AGENTKEY_BINDINGS=
+ # Optional bearer for Agentkey private-subject resolve (not required for verify)
+ # AGENTKEY_ACCESS_TOKEN=
+diff --git a/docs/developers/agentkey.md b/docs/developers/agentkey.md
+index c1a7cc5..b0cbc2d 100644
+--- a/docs/developers/agentkey.md
++++ b/docs/developers/agentkey.md
+@@ -7,25 +7,69 @@ Same Monad Metropolis Track 04 story, two repos (not a monorepo merge):
+ | Repo | Role |
+ | --- | --- |
+ | [Agentkey](https://github.com/Rosh2403/AgentKey) | Portable agent identity: issue / resolve / **verify** (fail closed) |
+-| [Countersign](https://github.com/Rosh2403/countersign) | Payment account on Monad: ERC-8004 agent wallets sign payments inside owner rules |
++| [Countersign](https://github.com/AfshalG/countersign) | Payment account on Monad: ERC-8004 agent wallets sign payments inside owner rules |
+ 
+ Countersign already ties each payment to an ERC-8004 `agentWallet`. This bridge optionally asks Agentkey “is this agent still who they claim?” **before** the gateway accepts a payment.
+ 
++## Integrated ≠ enabled
++
++The bridge package and gateway choke points are always **integrated** in this codebase. That does **not** mean the identity gate is on.
++
++| Signal | Meaning |
++| --- | --- |
++| `GET /health` → `agentkey.integrated: true` | Bridge code is wired into this build |
++| `GET /health` → `agentkey.enabled: false` | **No** Agentkey call; demos work as before (default) |
++| `GET /health` → `agentkey.enabled: true` | Gate is live: fail-closed verify before pay |
++
++Production must set `AGENTKEY_VERIFY_ENABLED=true` (and bindings). Startup logs a warning when the gate is disabled.
++
+ ## What is wired
+ 
+-- Package `@countersign/agentkey-bridge` — maps ERC-8004 agent id ↔ Agentkey id, calls `@agentkey/sdk` `verify`
++- Package `@countersign/agentkey-bridge` — bindings, payment-bound challenges, `@agentkey/sdk` `verify`
+ - Gateway choke point: `POST /v1/payments` and `POST /v1/runs` (MCP / SDK pay tools go through the gateway)
+ - Behind env flags (default **off** so existing testnet demos keep working)
+ 
+ Verify is **fail closed**: only Agentkey `status: "valid"` authorizes. Transport errors, `invalid`, `unknown`, `revoked`, and `error` all return **403** — never soft-allow.
+ 
++## Bindings are authoritative
++
++`AGENTKEY_BINDINGS` maps ERC-8004 agent id → Agentkey id. When a binding exists for the recovered ERC-8004 agent:
++
++- That Agentkey id is used for verify.
++- Client `agentkey.id` that **differs** → **403** (mismatch).
++- Matching explicit id is allowed but redundant.
++
++Client `agentkey.id` is only used when there is **no** binding for that ERC-8004 agent.
++
++## Payment-bound challenge format
++
++Static challenges (e.g. `countersign-pay`) are **rejected** when the gate is on. The proof’s `challenge` must bind to this payment and carry a short TTL:
++
++```
++countersign-pay-v1:{vault}:{invoiceHash}:{amount}:{payTo}:{deadline}:{nonce}:{exp}
++```
++
++| Field | Meaning |
++| --- | --- |
++| `vault` | Order vault address (`0x…`, lowercase) |
++| `invoiceHash` | Payment `invoiceHash` (`0x…` bytes32) |
++| `amount` | Payment amount decimal string (same as body) |
++| `payTo` | Payee address (`0x…`) |
++| `deadline` | Payment deadline unix seconds |
++| `nonce` | Client hex (≥16 chars, no `0x`); unique per proof |
++| `exp` | Unix seconds; gateway rejects if `now > exp` or `exp > now + 900` (15 min max TTL) |
++
++Helper: `buildPaymentChallenge` / `assertPaymentBoundChallenge` from `@countersign/agentkey-bridge`.
++
++Replaying an old proof on a **different** invoice fails field match. Replaying after `exp` fails TTL.
++
+ ## Env vars
+ 
+ | Variable | Required when enabled | Meaning |
+ | --- | --- | --- |
+ | `AGENTKEY_VERIFY_ENABLED` | — | `true` / `1` / `yes` / `on` to turn the gate on |
+ | `AGENTKEY_BASE_URL` | yes | Agentkey HTTP API base (no trailing slash needed), e.g. `http://127.0.0.1:8787` |
+-| `AGENTKEY_BINDINGS` | recommended | JSON map `{"2066":"ak_hosted",…}` ERC-8004 id → Agentkey id |
++| `AGENTKEY_BINDINGS` | recommended | JSON map `{"2066":"ak_hosted",…}` ERC-8004 id → Agentkey id (authoritative) |
+ | `AGENTKEY_ACCESS_TOKEN` | no | Optional bearer for Agentkey private resolve |
+ 
+ Names only in `.env.example`. Never commit secrets.
+@@ -33,10 +77,9 @@ Names only in `.env.example`. Never commit secrets.
+ ## Dependency (no npm publish)
+ 
+ ```json
+-"@agentkey/sdk": "github:Rosh2403/AgentKey#main&path:packages/sdk"
++"@agentkey/sdk": "github:Rosh2403/AgentKey#…&path:packages/sdk"
+ ```
+ 
+-
+ ## Demo steps (flagged verify path)
+ 
+ 1. **Run Agentkey API** (from the Agentkey repo):
+@@ -46,19 +89,30 @@ Names only in `.env.example`. Never commit secrets.
+    pnpm --filter @agentkey/api dev   # :8787
+    ```
+ 
+-2. **Issue an agent and make a proof** (Agentkey quickstart or SDK):
++2. **Issue an agent and make a payment-bound proof**:
+ 
+    ```ts
+    import { AgentkeyClient, agentKeys } from '@agentkey/sdk';
++   import { buildPaymentChallenge } from '@countersign/agentkey-bridge';
++
+    const client = new AgentkeyClient({ baseUrl: 'http://127.0.0.1:8787' });
+    const keys = agentKeys.generate();
+    const agent = await client.issue({ publicHandle: 'cs-demo', publicKey: keys.publicKey });
++
++   const payment = {
++     vault: '0x…',
++     invoiceHash: '0x…',
++     amount: '1000',
++     payTo: '0x…',
++     deadline: 1791400000,
++   };
++   const challenge = buildPaymentChallenge(payment); // includes nonce + exp
+    const proof = agentKeys.createProof({
+      agentId: agent.id,
+-     challenge: 'countersign-pay',
++     challenge,
+      privateKey: keys.privateKey,
+    });
+-   // save agent.id + proof
++   // save agent.id + proof; rebuild challenge (same nonce/exp) only if reusing this proof before exp
+    ```
+ 
+ 3. **Start Countersign gateway** with the gate on, binding your ERC-8004 agent (e.g. hosted `2066`) to that Agentkey id:
+@@ -79,15 +133,15 @@ Names only in `.env.example`. Never commit secrets.
+      "vault": "0x…",
+      "payment": { "amount": "1000", "invoiceHash": "0x…", "payTo": "0x…", "deadline": 1791400000 },
+      "agentSig": "0x…",
+-     "agentkey": { "proof": "{\"challenge\":\"countersign-pay\",\"signature\":\"…\"}" }
++     "agentkey": { "proof": "{\"challenge\":\"countersign-pay-v1:…\",\"signature\":\"…\"}" }
+    }
+    ```
+ 
+-   Or pass `"agentkey": { "id": "ak_…", "proof": "…" }` if you skip `AGENTKEY_BINDINGS`.
++   Pass `"agentkey": { "id": "ak_…", "proof": "…" }` only if you skip `AGENTKEY_BINDINGS` for that ERC-8004 agent. If a binding exists, a different `id` is denied.
+ 
+-5. **Fail-closed check**: stop the Agentkey API (or send a bad proof). The same `POST /v1/payments` returns **403** with `error: "agentkey_verify_failed"` and `status: "error"` (or `invalid`) — payment is not created.
++5. **Fail-closed check**: stop the Agentkey API (or send a bad / expired / wrong-invoice proof). The same `POST /v1/payments` returns **403** with `error: "agentkey_verify_failed"` — payment is not created.
+ 
+-With the flag **off**, behaviour is unchanged: no Agentkey call, demos work as before.
++With the flag **off**, behaviour is unchanged: no Agentkey call, demos work as before. Confirm via `/health`.
+ 
+ ## MCP
+ 
+diff --git a/packages/agentkey-bridge/src/bindings.ts b/packages/agentkey-bridge/src/bindings.ts
+index 6b18337..000d26e 100644
+--- a/packages/agentkey-bridge/src/bindings.ts
++++ b/packages/agentkey-bridge/src/bindings.ts
+@@ -3,10 +3,34 @@
+  *
+  * Env `AGENTKEY_BINDINGS` is a JSON object, e.g.
+  *   {"2066":"ak_hosted_abc","2067":"ak_demo_xyz"}
++ *
++ * When a binding exists for the ERC-8004 agent, it is authoritative: a client
++ * `agentkey.id` that differs is a mismatch (fail closed). Explicit id is only
++ * used when there is no binding for that agent.
+  */
+ 
+ export type AgentkeyBindings = ReadonlyMap<string, string>;
+ 
++export type ResolveAgentkeyIdResolved = {
++  status: 'resolved';
++  agentkeyId: string;
++  /** True when the id came from AGENTKEY_BINDINGS. */
++  fromBinding: boolean;
++};
++
++export type ResolveAgentkeyIdMismatch = {
++  status: 'mismatch';
++  boundId: string;
++  explicitId: string;
++};
++
++export type ResolveAgentkeyIdUnresolved = {
++  status: 'unresolved';
++};
++
++export type ResolveAgentkeyIdResult =
++  ResolveAgentkeyIdResolved | ResolveAgentkeyIdMismatch | ResolveAgentkeyIdUnresolved;
++
+ export function parseBindings(raw: string | undefined): AgentkeyBindings {
+   if (raw === undefined || raw.trim() === '') return new Map();
+   let parsed: unknown;
+@@ -28,14 +52,34 @@ export function parseBindings(raw: string | undefined): AgentkeyBindings {
+   return map;
+ }
+ 
+-/** Resolve Agentkey id from an ERC-8004 agent id, then an optional explicit override. */
++/**
++ * Resolve Agentkey id for an ERC-8004 agent.
++ *
++ * - Binding present → use it; if explicit id is set and differs → `mismatch`.
++ * - No binding → use explicit id when provided.
++ * - Neither → `unresolved`.
++ */
+ export function resolveAgentkeyId(
+   bindings: AgentkeyBindings,
+   erc8004AgentId: string | null | undefined,
+   explicit?: string | null,
+-): string | undefined {
+-  if (explicit?.trim()) return explicit.trim();
+-  if (erc8004AgentId === undefined || erc8004AgentId === null || erc8004AgentId === '')
+-    return undefined;
+-  return bindings.get(erc8004AgentId);
++): ResolveAgentkeyIdResult {
++  const explicitId = explicit?.trim() || undefined;
++  const bound =
++    erc8004AgentId !== undefined && erc8004AgentId !== null && erc8004AgentId !== ''
++      ? bindings.get(erc8004AgentId)
++      : undefined;
++
++  if (bound) {
++    if (explicitId !== undefined && explicitId !== bound) {
++      return { status: 'mismatch', boundId: bound, explicitId };
++    }
++    return { status: 'resolved', agentkeyId: bound, fromBinding: true };
++  }
++
++  if (explicitId !== undefined) {
++    return { status: 'resolved', agentkeyId: explicitId, fromBinding: false };
++  }
++
++  return { status: 'unresolved' };
+ }
+diff --git a/packages/agentkey-bridge/src/challenge.ts b/packages/agentkey-bridge/src/challenge.ts
+new file mode 100644
+index 0000000..76db012
+--- /dev/null
++++ b/packages/agentkey-bridge/src/challenge.ts
+@@ -0,0 +1,202 @@
++/**
++ * Payment-bound Agentkey ownership challenges.
++ *
++ * Format (single line, colon-separated):
++ *
++ *   countersign-pay-v1:{vault}:{invoiceHash}:{amount}:{payTo}:{deadline}:{nonce}:{exp}
++ *
++ * Fields:
++ * - vault, invoiceHash, payTo — lowercase 0x-hex as submitted on the payment
++ * - amount — decimal string (wei / smallest USDC unit), same as payment.amount
++ * - deadline — payment deadline unix seconds (decimal)
++ * - nonce — client-generated hex (no 0x), ≥16 hex chars; makes proofs unique within TTL
++ * - exp — unix seconds after which the gateway rejects the proof (short TTL)
++ *
++ * The agent signs this challenge string via Agentkey (`agentkey-verify-v1\n{id}\n{challenge}`).
++ * Static challenges such as `countersign-pay` are rejected when the gate is on.
++ */
++
++export const PAYMENT_CHALLENGE_PREFIX = 'countersign-pay-v1';
++
++/** Default max lifetime clients may set for `exp` (seconds from now). */
++export const PAYMENT_CHALLENGE_MAX_TTL_SECONDS = 15 * 60;
++
++/** Minimum nonce length in hex characters (8 bytes). */
++export const PAYMENT_CHALLENGE_MIN_NONCE_HEX = 16;
++
++export type PaymentChallengeFields = {
++  vault: string;
++  invoiceHash: string;
++  amount: string;
++  payTo: string;
++  deadline: number;
++};
++
++export type BuildPaymentChallengeInput = PaymentChallengeFields & {
++  /** Client nonce (hex, optional 0x). Generated if omitted. */
++  nonce?: string;
++  /** Absolute expiry unix seconds. Defaults to now + 5 minutes. */
++  exp?: number;
++  /** Used when `exp` is omitted. */
++  nowSeconds?: number;
++  /** TTL when `exp` is omitted (default 300). */
++  ttlSeconds?: number;
++};
++
++export type ParsedPaymentChallenge = PaymentChallengeFields & {
++  nonce: string;
++  exp: number;
++};
++
++export type ChallengeValidationOk = { ok: true; parsed: ParsedPaymentChallenge };
++export type ChallengeValidationDenied = { ok: false; reason: string };
++export type ChallengeValidation = ChallengeValidationOk | ChallengeValidationDenied;
++
++function normalizeAddress(value: string): string {
++  const v = value.trim().toLowerCase();
++  return v.startsWith('0x') ? v : `0x${v}`;
++}
++
++function normalizeHex32(value: string): string {
++  return normalizeAddress(value);
++}
++
++function normalizeNonce(raw: string): string | undefined {
++  const n = raw.trim().toLowerCase().replace(/^0x/, '');
++  if (!/^[0-9a-f]+$/.test(n) || n.length < PAYMENT_CHALLENGE_MIN_NONCE_HEX) return undefined;
++  return n;
++}
++
++function randomNonceHex(): string {
++  const bytes = new Uint8Array(16);
++  crypto.getRandomValues(bytes);
++  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
++}
++
++/** Build a payment-bound challenge string for Agentkey `createProof`. */
++export function buildPaymentChallenge(input: BuildPaymentChallengeInput): string {
++  const now = input.nowSeconds ?? Math.floor(Date.now() / 1000);
++  const ttl = input.ttlSeconds ?? 5 * 60;
++  const exp = input.exp ?? now + ttl;
++  const nonce = input.nonce !== undefined ? normalizeNonce(input.nonce) : randomNonceHex();
++  if (!nonce) {
++    throw new Error(`nonce must be ≥${String(PAYMENT_CHALLENGE_MIN_NONCE_HEX)} hex characters`);
++  }
++  const vault = normalizeAddress(input.vault);
++  const invoiceHash = normalizeHex32(input.invoiceHash);
++  const payTo = normalizeAddress(input.payTo);
++  const amount = input.amount.trim();
++  const deadline = String(input.deadline);
++  return [
++    PAYMENT_CHALLENGE_PREFIX,
++    vault,
++    invoiceHash,
++    amount,
++    payTo,
++    deadline,
++    nonce,
++    String(exp),
++  ].join(':');
++}
++
++/** Parse a payment-bound challenge; returns undefined if the prefix/shape is wrong. */
++export function parsePaymentChallenge(challenge: string): ParsedPaymentChallenge | undefined {
++  const parts = challenge.trim().split(':');
++  if (parts.length !== 8) return undefined;
++  const [prefix, vault, invoiceHash, amount, payTo, deadlineRaw, nonceRaw, expRaw] = parts;
++  if (prefix !== PAYMENT_CHALLENGE_PREFIX) return undefined;
++  if (!vault || !invoiceHash || !amount || !payTo || !deadlineRaw || !nonceRaw || !expRaw) {
++    return undefined;
++  }
++  const nonce = normalizeNonce(nonceRaw);
++  if (!nonce) return undefined;
++  const deadline = Number(deadlineRaw);
++  const exp = Number(expRaw);
++  if (!Number.isInteger(deadline) || !Number.isInteger(exp)) return undefined;
++  return {
++    vault: normalizeAddress(vault),
++    invoiceHash: normalizeHex32(invoiceHash),
++    amount: amount.trim(),
++    payTo: normalizeAddress(payTo),
++    deadline,
++    nonce,
++    exp,
++  };
++}
++
++/**
++ * Extract the `challenge` field from an Agentkey ownership proof JSON string.
++ * Returns undefined if the proof is not valid JSON with a non-empty challenge.
++ */
++export function extractProofChallenge(proof: string): string | undefined {
++  try {
++    const parsed = JSON.parse(proof) as unknown;
++    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
++    const challenge = (parsed as { challenge?: unknown }).challenge;
++    if (typeof challenge !== 'string' || !challenge.trim()) return undefined;
++    return challenge.trim();
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Fail closed unless the proof's challenge is payment-bound, matches these fields,
++ * and is within TTL (`exp` not past; not further ahead than max TTL).
++ */
++export function assertPaymentBoundChallenge(
++  proof: string,
++  payment: PaymentChallengeFields,
++  options: { nowSeconds?: number; maxTtlSeconds?: number } = {},
++): ChallengeValidation {
++  const challenge = extractProofChallenge(proof);
++  if (!challenge) {
++    return { ok: false, reason: 'agentkey proof missing challenge' };
++  }
++  if (!challenge.startsWith(`${PAYMENT_CHALLENGE_PREFIX}:`)) {
++    return {
++      ok: false,
++      reason:
++        'agentkey challenge must be payment-bound (countersign-pay-v1:…); static challenges are rejected',
++    };
++  }
++  const parsed = parsePaymentChallenge(challenge);
++  if (!parsed) {
++    return { ok: false, reason: 'agentkey challenge has invalid countersign-pay-v1 shape' };
++  }
++
++  const expected = {
++    vault: normalizeAddress(payment.vault),
++    invoiceHash: normalizeHex32(payment.invoiceHash),
++    amount: payment.amount.trim(),
++    payTo: normalizeAddress(payment.payTo),
++    deadline: payment.deadline,
++  };
++
++  if (
++    parsed.vault !== expected.vault ||
++    parsed.invoiceHash !== expected.invoiceHash ||
++    parsed.amount !== expected.amount ||
++    parsed.payTo !== expected.payTo ||
++    parsed.deadline !== expected.deadline
++  ) {
++    return {
++      ok: false,
++      reason: 'agentkey challenge does not match this payment (replay or wrong invoice)',
++    };
++  }
++
++  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
++  const maxTtl = options.maxTtlSeconds ?? PAYMENT_CHALLENGE_MAX_TTL_SECONDS;
++  if (parsed.exp < now) {
++    return { ok: false, reason: 'agentkey challenge expired' };
++  }
++  if (parsed.exp > now + maxTtl) {
++    return {
++      ok: false,
++      reason: `agentkey challenge exp too far in the future (max TTL ${String(maxTtl)}s)`,
++    };
++  }
++
++  return { ok: true, parsed };
++}
+diff --git a/packages/agentkey-bridge/src/config.ts b/packages/agentkey-bridge/src/config.ts
+index d82403b..4f8999f 100644
+--- a/packages/agentkey-bridge/src/config.ts
++++ b/packages/agentkey-bridge/src/config.ts
+@@ -5,10 +5,13 @@ import { parseBindings, type AgentkeyBindings } from './bindings.js';
+  * Optional Agentkey verify gate for Countersign payment paths.
+  * Off by default so existing testnet demos keep working.
+  *
++ * The bridge package is always integrated; that does **not** mean the gate is on.
++ * Production must set AGENTKEY_VERIFY_ENABLED — check GET /health → agentkey.enabled.
++ *
+  * Env:
+  * - AGENTKEY_VERIFY_ENABLED=true|1|yes
+  * - AGENTKEY_BASE_URL=https://… (required when enabled)
+- * - AGENTKEY_BINDINGS={"2066":"ak_…"} (ERC-8004 id → Agentkey id)
++ * - AGENTKEY_BINDINGS={"2066":"ak_…"} (ERC-8004 id → Agentkey id; authoritative when present)
+  * - AGENTKEY_ACCESS_TOKEN=… (optional bearer for private resolve; not required for verify)
+  */
+ 
+diff --git a/packages/agentkey-bridge/src/index.ts b/packages/agentkey-bridge/src/index.ts
+index e1d3473..9a2b1cb 100644
+--- a/packages/agentkey-bridge/src/index.ts
++++ b/packages/agentkey-bridge/src/index.ts
+@@ -4,6 +4,9 @@
+  * Agentkey answers "who is this agent?". Countersign answers "may this agent pay?".
+  * When `AGENTKEY_VERIFY_ENABLED` is on, the gateway calls Agentkey verify (fail closed)
+  * before accepting a payment from a mapped ERC-8004 agent.
++ *
++ * The package is always present in the repo (integrated). That does **not** mean the
++ * gate is enabled in production — enable only via `AGENTKEY_VERIFY_ENABLED`.
+  */
+ 
+ export {
+@@ -16,7 +19,31 @@ export {
+   type AuthorizeOutcome,
+ } from './authorize.js';
+ 
+-export { parseBindings, resolveAgentkeyId, type AgentkeyBindings } from './bindings.js';
++export {
++  parseBindings,
++  resolveAgentkeyId,
++  type AgentkeyBindings,
++  type ResolveAgentkeyIdMismatch,
++  type ResolveAgentkeyIdResolved,
++  type ResolveAgentkeyIdResult,
++  type ResolveAgentkeyIdUnresolved,
++} from './bindings.js';
++
++export {
++  PAYMENT_CHALLENGE_MAX_TTL_SECONDS,
++  PAYMENT_CHALLENGE_MIN_NONCE_HEX,
++  PAYMENT_CHALLENGE_PREFIX,
++  assertPaymentBoundChallenge,
++  buildPaymentChallenge,
++  extractProofChallenge,
++  parsePaymentChallenge,
++  type BuildPaymentChallengeInput,
++  type ChallengeValidation,
++  type ChallengeValidationDenied,
++  type ChallengeValidationOk,
++  type ParsedPaymentChallenge,
++  type PaymentChallengeFields,
++} from './challenge.js';
+ 
+ export {
+   createAgentkeyClient,
+diff --git a/packages/agentkey-bridge/test/authorize.test.ts b/packages/agentkey-bridge/test/authorize.test.ts
+index e39d908..3a28623 100644
+--- a/packages/agentkey-bridge/test/authorize.test.ts
++++ b/packages/agentkey-bridge/test/authorize.test.ts
+@@ -6,6 +6,13 @@ import {
+   type AuthorizeOutcome,
+ } from '../src/authorize.js';
+ import { parseBindings, resolveAgentkeyId } from '../src/bindings.js';
++import {
++  assertPaymentBoundChallenge,
++  buildPaymentChallenge,
++  extractProofChallenge,
++  parsePaymentChallenge,
++  PAYMENT_CHALLENGE_PREFIX,
++} from '../src/challenge.js';
+ import { isAgentkeyVerifyEnabled, loadAgentkeyGateConfig } from '../src/config.js';
+ import type { VerifyResult } from '@agentkey/sdk';
+ 
+@@ -20,6 +27,14 @@ function stub(
+   };
+ }
+ 
++const PAYMENT = {
++  vault: '0x1111111111111111111111111111111111111111',
++  invoiceHash: '0x2222222222222222222222222222222222222222222222222222222222222222',
++  amount: '1000',
++  payTo: '0x3333333333333333333333333333333333333333',
++  deadline: 1_791_400_000,
++};
++
+ describe('assertAuthorizedToPay (fail closed)', () => {
+   it('authorizes only when Agentkey returns valid', async () => {
+     const outcome = await assertAuthorizedToPay(stub({ status: 'valid' }), {
+@@ -103,12 +118,38 @@ describe('assertAuthorizedToPay (fail closed)', () => {
+   });
+ });
+ 
+-describe('bindings', () => {
+-  it('parses ERC-8004 → Agentkey map', () => {
++describe('bindings (authoritative when present)', () => {
++  it('uses binding and ignores matching explicit id', () => {
+     const map = parseBindings('{"2066":"ak_hosted","2067":"ak_demo"}');
+-    expect(resolveAgentkeyId(map, '2066')).toBe('ak_hosted');
+-    expect(resolveAgentkeyId(map, '2067', 'ak_override')).toBe('ak_override');
+-    expect(resolveAgentkeyId(map, '9999')).toBeUndefined();
++    expect(resolveAgentkeyId(map, '2066')).toEqual({
++      status: 'resolved',
++      agentkeyId: 'ak_hosted',
++      fromBinding: true,
++    });
++    expect(resolveAgentkeyId(map, '2066', 'ak_hosted')).toEqual({
++      status: 'resolved',
++      agentkeyId: 'ak_hosted',
++      fromBinding: true,
++    });
++  });
++
++  it('fail-closed: explicit id that differs from binding is mismatch', () => {
++    const map = parseBindings('{"2067":"ak_bound"}');
++    expect(resolveAgentkeyId(map, '2067', 'ak_override')).toEqual({
++      status: 'mismatch',
++      boundId: 'ak_bound',
++      explicitId: 'ak_override',
++    });
++  });
++
++  it('allows explicit id only when no binding', () => {
++    const map = parseBindings('{"2066":"ak_hosted"}');
++    expect(resolveAgentkeyId(map, '9999', 'ak_explicit')).toEqual({
++      status: 'resolved',
++      agentkeyId: 'ak_explicit',
++      fromBinding: false,
++    });
++    expect(resolveAgentkeyId(map, '9999')).toEqual({ status: 'unresolved' });
+   });
+ 
+   it('rejects malformed bindings', () => {
+@@ -118,6 +159,77 @@ describe('bindings', () => {
+   });
+ });
+ 
++describe('payment-bound challenge', () => {
++  it('builds and parses countersign-pay-v1', () => {
++    const challenge = buildPaymentChallenge({
++      ...PAYMENT,
++      nonce: 'aabbccddeeff0011',
++      exp: 1_700_000_300,
++      nowSeconds: 1_700_000_000,
++    });
++    expect(challenge.startsWith(`${PAYMENT_CHALLENGE_PREFIX}:`)).toBe(true);
++    expect(parsePaymentChallenge(challenge)).toEqual({
++      vault: PAYMENT.vault,
++      invoiceHash: PAYMENT.invoiceHash,
++      amount: PAYMENT.amount,
++      payTo: PAYMENT.payTo,
++      deadline: PAYMENT.deadline,
++      nonce: 'aabbccddeeff0011',
++      exp: 1_700_000_300,
++    });
++  });
++
++  it('accepts a fresh payment-bound proof challenge', () => {
++    const challenge = buildPaymentChallenge({
++      ...PAYMENT,
++      nonce: '0123456789abcdef',
++      nowSeconds: 1_700_000_000,
++      exp: 1_700_000_200,
++    });
++    const proof = JSON.stringify({ challenge, signature: 'ab' });
++    const check = assertPaymentBoundChallenge(proof, PAYMENT, { nowSeconds: 1_700_000_000 });
++    expect(check.ok).toBe(true);
++  });
++
++  it('rejects static countersign-pay challenge', () => {
++    const proof = JSON.stringify({ challenge: 'countersign-pay', signature: 'ab' });
++    const check = assertPaymentBoundChallenge(proof, PAYMENT, { nowSeconds: 1_700_000_000 });
++    expect(check.ok).toBe(false);
++    if (!check.ok) expect(check.reason).toMatch(/payment-bound/);
++  });
++
++  it('rejects replay on a different payment (field mismatch)', () => {
++    const challenge = buildPaymentChallenge({
++      ...PAYMENT,
++      nonce: '0123456789abcdef',
++      nowSeconds: 1_700_000_000,
++      exp: 1_700_000_200,
++    });
++    const proof = JSON.stringify({ challenge, signature: 'ab' });
++    const other = { ...PAYMENT, invoiceHash: `0x${'44'.repeat(32)}` };
++    const check = assertPaymentBoundChallenge(proof, other, { nowSeconds: 1_700_000_000 });
++    expect(check.ok).toBe(false);
++    if (!check.ok) expect(check.reason).toMatch(/does not match this payment/);
++  });
++
++  it('rejects expired challenge (TTL / old proof)', () => {
++    const challenge = buildPaymentChallenge({
++      ...PAYMENT,
++      nonce: '0123456789abcdef',
++      exp: 1_700_000_100,
++    });
++    const proof = JSON.stringify({ challenge, signature: 'ab' });
++    const check = assertPaymentBoundChallenge(proof, PAYMENT, { nowSeconds: 1_700_000_200 });
++    expect(check.ok).toBe(false);
++    if (!check.ok) expect(check.reason).toMatch(/expired/);
++  });
++
++  it('extracts challenge from proof JSON', () => {
++    expect(extractProofChallenge('{"challenge":"x","signature":"y"}')).toBe('x');
++    expect(extractProofChallenge('not-json')).toBeUndefined();
++  });
++});
++
+ describe('loadAgentkeyGateConfig', () => {
+   it('is off by default so demos keep working', () => {
+     expect(isAgentkeyVerifyEnabled({})).toBe(false);
+diff --git a/packages/sdk/src/types.ts b/packages/sdk/src/types.ts
+index 535745a..f311611 100644
+--- a/packages/sdk/src/types.ts
++++ b/packages/sdk/src/types.ts
+@@ -152,6 +152,8 @@ export type Invoice = {
+   document?: unknown;
+   /**
+    * Optional Agentkey ownership proof when the gateway has `AGENTKEY_VERIFY_ENABLED`.
++   * Proof challenge must be payment-bound (`buildPaymentChallenge` / countersign-pay-v1).
++   * `id` is ignored when AGENTKEY_BINDINGS maps this ERC-8004 agent (must match if set).
+    * See docs/developers/agentkey.md.
+    */
+   agentkey?: { id?: string; proof: string };
+diff --git a/services/gateway/src/agents/agentkey-gate.ts b/services/gateway/src/agents/agentkey-gate.ts
+index 637b2a8..06c84e1 100644
+--- a/services/gateway/src/agents/agentkey-gate.ts
++++ b/services/gateway/src/agents/agentkey-gate.ts
+@@ -1,8 +1,10 @@
+ import {
+   assertAuthorizedToPay,
++  assertPaymentBoundChallenge,
+   resolveAgentkeyId,
+   type AgentkeyBindings,
+   type AgentkeyVerifier,
++  type PaymentChallengeFields,
+ } from '@countersign/agentkey-bridge';
+ import type { AgentDirectory } from './identity.js';
+ 
+@@ -10,6 +12,9 @@ import type { AgentDirectory } from './identity.js';
+  * Optional Agentkey verify gate on the payment path.
+  * When enabled, only agents that Agentkey verifies as `valid` may pay.
+  * Fail closed on every non-valid outcome (including transport error).
++ *
++ * Bindings are authoritative: client `agentkey.id` cannot override AGENTKEY_BINDINGS.
++ * Proofs must use a payment-bound challenge (see buildPaymentChallenge).
+  */
+ 
+ export type AgentkeyGate = {
+@@ -19,9 +24,12 @@ export type AgentkeyGate = {
+ };
+ 
+ export type AgentkeyProofInput = {
+-  /** Optional explicit Agentkey id; otherwise looked up from ERC-8004 via bindings. */
++  /**
++   * Optional Agentkey id when there is no AGENTKEY_BINDINGS entry for this ERC-8004 agent.
++   * Ignored when a binding exists (must match it, or the pay is denied).
++   */
+   id?: string | undefined;
+-  /** JSON ownership proof for Agentkey `/v1/verify`. */
++  /** JSON ownership proof for Agentkey `/v1/verify` (payment-bound challenge). */
+   proof: string;
+ };
+ 
+@@ -41,12 +49,23 @@ export async function authorizePaymentAgent(
+   input: {
+     agentAddress: string | null;
+     agentkey?: AgentkeyProofInput;
++    payment: PaymentChallengeFields;
+   },
+ ): Promise<GateDenial | null> {
+   const erc8004AgentId = gate.agents?.byAddress(input.agentAddress)?.agentId ?? null;
+-  const agentkeyId = resolveAgentkeyId(gate.bindings, erc8004AgentId, input.agentkey?.id);
++  const resolved = resolveAgentkeyId(gate.bindings, erc8004AgentId, input.agentkey?.id);
+ 
+-  if (!agentkeyId) {
++  if (resolved.status === 'mismatch') {
++    return {
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      reason: `agentkey.id ${resolved.explicitId} does not match AGENTKEY_BINDINGS (${resolved.boundId})`,
++      agentkeyId: resolved.boundId,
++      erc8004AgentId,
++    };
++  }
++
++  if (resolved.status === 'unresolved') {
+     return {
+       error: 'agentkey_verify_failed',
+       status: 'error',
+@@ -57,13 +76,37 @@ export async function authorizePaymentAgent(
+     };
+   }
+ 
++  const agentkeyId = resolved.agentkeyId;
+   const proof = input.agentkey?.proof ?? '';
++
++  if (!proof.trim()) {
++    return {
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      reason: 'missing agentkey proof',
++      agentkeyId,
++      erc8004AgentId,
++    };
++  }
++
++  const challengeCheck = assertPaymentBoundChallenge(proof, input.payment);
++  if (!challengeCheck.ok) {
++    return {
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      reason: challengeCheck.reason,
++      agentkeyId,
++      erc8004AgentId,
++    };
++  }
++
+   const outcome = await assertAuthorizedToPay(gate.client, {
+     agentkeyId,
+     proof,
+     context: {
+       erc8004AgentId,
+       agentAddress: input.agentAddress,
++      challenge: challengeCheck.parsed,
+     },
+   });
+ 
+diff --git a/services/gateway/src/api/schemas.ts b/services/gateway/src/api/schemas.ts
+index 2650ce0..2057a7b 100644
+--- a/services/gateway/src/api/schemas.ts
++++ b/services/gateway/src/api/schemas.ts
+@@ -52,12 +52,12 @@ export const agentkeyProof = z
+   .object({
+     id: z.string().min(1).optional().openapi({
+       description:
+-        'Agentkey agent id (ak_…). Optional when AGENTKEY_BINDINGS maps this ERC-8004 agent.',
++        'Agentkey agent id (ak_…). Only used when AGENTKEY_BINDINGS has no entry for this ERC-8004 agent; if a binding exists, this must match it or the pay is denied.',
++    }),
++    proof: z.string().min(1).openapi({
++      description:
++        'JSON ownership proof for Agentkey POST /v1/verify. Challenge must be payment-bound: countersign-pay-v1:{vault}:{invoiceHash}:{amount}:{payTo}:{deadline}:{nonce}:{exp}',
+     }),
+-    proof: z
+-      .string()
+-      .min(1)
+-      .openapi({ description: 'JSON ownership proof for Agentkey POST /v1/verify' }),
+   })
+   .openapi('AgentkeyProof');
+ 
+diff --git a/services/gateway/src/app.ts b/services/gateway/src/app.ts
+index b2531b8..7ef74e0 100644
+--- a/services/gateway/src/app.ts
++++ b/services/gateway/src/app.ts
+@@ -354,11 +354,18 @@ async function denyUnlessAgentkey(
+   deps: AppDeps,
+   agentAddress: Address | null,
+   agentkey: AgentkeyProofInput | undefined,
++  payment: {
++    vault: string;
++    invoiceHash: string;
++    amount: string;
++    payTo: string;
++    deadline: number;
++  },
+ ) {
+   if (!deps.agentkey) return null;
+   return authorizePaymentAgent(
+     { ...deps.agentkey, ...(deps.agents ? { agents: deps.agents } : {}) },
+-    { agentAddress, ...(agentkey ? { agentkey } : {}) },
++    { agentAddress, payment, ...(agentkey ? { agentkey } : {}) },
+   );
+ }
+ 
+@@ -469,7 +476,13 @@ export function createApp(deps: AppDeps) {
+     const body = c.req.valid('json');
+     if (!mayUse(c, body.account)) return c.json(wrongAccount, 403);
+     const agentAddress = await agentOf(body.vault, body.payment, body.agentSig);
+-    const denied = await denyUnlessAgentkey(deps, agentAddress, body.agentkey);
++    const denied = await denyUnlessAgentkey(deps, agentAddress, body.agentkey, {
++      vault: body.vault,
++      invoiceHash: body.payment.invoiceHash,
++      amount: body.payment.amount,
++      payTo: body.payment.payTo,
++      deadline: body.payment.deadline,
++    });
+     if (denied) return c.json(denied, 403);
+     const { request, created: isNew } = await store.createRequest({
+       id: requestId(body.account, body.vault, body.payment.invoiceHash as Hex),
+@@ -497,7 +510,13 @@ export function createApp(deps: AppDeps) {
+     if (deps.agentkey) {
+       for (const p of payments) {
+         const agentAddress = await agentOf(p.vault, p.payment, p.agentSig);
+-        const denied = await denyUnlessAgentkey(deps, agentAddress, p.agentkey);
++        const denied = await denyUnlessAgentkey(deps, agentAddress, p.agentkey, {
++          vault: p.vault,
++          invoiceHash: p.payment.invoiceHash,
++          amount: p.payment.amount,
++          payTo: p.payment.payTo,
++          deadline: p.payment.deadline,
++        });
+         if (denied) return c.json(denied, 403);
+       }
+     }
+diff --git a/services/gateway/src/main.ts b/services/gateway/src/main.ts
+index a730078..d544929 100644
+--- a/services/gateway/src/main.ts
++++ b/services/gateway/src/main.ts
+@@ -245,9 +245,14 @@ console.log(
+   `whatsapp ${wa ? `on (${wa.template ? `template ${wa.template.name}` : 'no template: only within 24 hours'})` : 'off'}`,
+ );
+ 
+-console.log(
+-  `agentkey verify ${agentkeyConfig.enabled ? `on (${agentkeyConfig.baseUrl ?? 'no url'})` : 'off'}`,
+-);
++if (agentkeyConfig.enabled) {
++  console.log(`agentkey verify on (${agentkeyConfig.baseUrl ?? 'no url'})`);
++} else {
++  // Integrated (bridge code wired) ≠ enabled. Demos stay off-by-default; production must opt in.
++  console.warn(
++    'agentkey verify DISABLED — identity gate absent (integrated ≠ enabled); set AGENTKEY_VERIFY_ENABLED=true for production',
++  );
++}
+ 
+ const app = createApp({
+   agents,
+@@ -294,14 +299,18 @@ const app = createApp({
+     whatsapp: wa ? { template: wa.template?.name ?? null } : null,
+     // Suppliers' website proofs (Slice 15): Primus on or off, and the registry on Monad.
+     proofs: { primus: primus !== undefined, registry: deployments.supplierProofs },
+-    // Agentkey verify gate (Track 04 bridge); off keeps existing demos working.
+-    agentkey: agentkeyConfig.enabled
+-      ? {
+-          enabled: true,
+-          baseUrl: agentkeyConfig.baseUrl ?? null,
+-          bindings: agentkeyConfig.bindings.size,
+-        }
+-      : { enabled: false },
++    // Agentkey bridge is always integrated in this build; `enabled` is the runtime switch
++    // (off by default for demos). integrated ≠ enabled in production — check `enabled`.
++    agentkey: {
++      integrated: true,
++      enabled: agentkeyConfig.enabled,
++      ...(agentkeyConfig.enabled
++        ? {
++            baseUrl: agentkeyConfig.baseUrl ?? null,
++            bindings: agentkeyConfig.bindings.size,
++          }
++        : {}),
++    },
+   }),
+ });
+ const server = serve({ fetch: app.fetch, port: settings.PORT }, (info) => {
+diff --git a/services/gateway/test/agentkey-gate.test.ts b/services/gateway/test/agentkey-gate.test.ts
+index 1849ad1..28a38e6 100644
+--- a/services/gateway/test/agentkey-gate.test.ts
++++ b/services/gateway/test/agentkey-gate.test.ts
+@@ -1,12 +1,34 @@
+ import { describe, expect, it } from 'vitest';
+ import { getAddress, type Address } from 'viem';
+ import { IDENTITY_REGISTRY_TESTNET } from '@countersign/shared';
+-import type { VerifyResult } from '@countersign/agentkey-bridge';
++import { buildPaymentChallenge, type VerifyResult } from '@countersign/agentkey-bridge';
+ import { AgentDirectory, type IdentityChain } from '../src/agents/identity.js';
+ import { authorizePaymentAgent } from '../src/agents/agentkey-gate.js';
+ 
+ const WALLET = getAddress('0x0f92A10b64B4A177cB1E090edC317C4202f71DC3');
+ 
++const PAYMENT = {
++  vault: '0x1111111111111111111111111111111111111111',
++  invoiceHash: '0x2222222222222222222222222222222222222222222222222222222222222222',
++  amount: '1000',
++  payTo: '0x3333333333333333333333333333333333333333',
++  deadline: 1_791_400_000,
++};
++
++function boundProof(
++  overrides: Partial<typeof PAYMENT> = {},
++  now = Math.floor(Date.now() / 1000),
++): string {
++  const payment = { ...PAYMENT, ...overrides };
++  const challenge = buildPaymentChallenge({
++    ...payment,
++    nonce: '0123456789abcdef',
++    nowSeconds: now,
++    exp: now + 120,
++  });
++  return JSON.stringify({ challenge, signature: 'ab' });
++}
++
+ async function directoryWith(wallet: Address, agentId = 2066n): Promise<AgentDirectory> {
+   const identity: IdentityChain = {
+     agentWallet: (id) =>
+@@ -45,7 +67,8 @@ describe('authorizePaymentAgent (gateway choke point)', () => {
+       },
+       {
+         agentAddress: WALLET,
+-        agentkey: { proof: '{"challenge":"c","signature":"ab"}' },
++        payment: PAYMENT,
++        agentkey: { proof: boundProof() },
+       },
+     );
+     expect(denial).toBeNull();
+@@ -60,7 +83,8 @@ describe('authorizePaymentAgent (gateway choke point)', () => {
+       },
+       {
+         agentAddress: WALLET,
+-        agentkey: { proof: '{}' },
++        payment: PAYMENT,
++        agentkey: { proof: boundProof() },
+       },
+     );
+     expect(denial).toEqual({
+@@ -79,7 +103,7 @@ describe('authorizePaymentAgent (gateway choke point)', () => {
+         bindings: new Map([['2066', 'ak_hosted']]),
+         agents: await directoryWith(WALLET),
+       },
+-      { agentAddress: WALLET, agentkey: { proof: '{}' } },
++      { agentAddress: WALLET, payment: PAYMENT, agentkey: { proof: boundProof() } },
+     );
+     expect(denial?.status).toBe('invalid');
+     expect(denial?.error).toBe('agentkey_verify_failed');
+@@ -92,7 +116,7 @@ describe('authorizePaymentAgent (gateway choke point)', () => {
+         bindings: new Map(),
+         agents: await directoryWith(WALLET),
+       },
+-      { agentAddress: WALLET, agentkey: { proof: '{}' } },
++      { agentAddress: WALLET, payment: PAYMENT, agentkey: { proof: boundProof() } },
+     );
+     expect(denial?.status).toBe('error');
+     expect(denial?.reason).toMatch(/no Agentkey binding/);
+@@ -106,9 +130,121 @@ describe('authorizePaymentAgent (gateway choke point)', () => {
+       },
+       {
+         agentAddress: WALLET,
+-        agentkey: { id: 'ak_explicit', proof: '{}' },
++        payment: PAYMENT,
++        agentkey: { id: 'ak_explicit', proof: boundProof() },
++      },
++    );
++    expect(denial).toBeNull();
++  });
++
++  it('denies binding mismatch: client id cannot override AGENTKEY_BINDINGS', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_mapped']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        payment: PAYMENT,
++        agentkey: { id: 'ak_attacker', proof: boundProof() },
++      },
++    );
++    expect(denial).toMatchObject({
++      error: 'agentkey_verify_failed',
++      status: 'error',
++      agentkeyId: 'ak_mapped',
++      erc8004AgentId: '2066',
++    });
++    expect(denial?.reason).toMatch(/does not match AGENTKEY_BINDINGS/);
++  });
++
++  it('ignores matching explicit id when binding is set (still allows)', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_mapped']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        payment: PAYMENT,
++        agentkey: { id: 'ak_mapped', proof: boundProof() },
+       },
+     );
+     expect(denial).toBeNull();
+   });
++
++  it('denies missing proof when gate path is invoked', async () => {
++    const calls: unknown[] = [];
++    const denial = await authorizePaymentAgent(
++      {
++        client: {
++          verify: (req) => {
++            calls.push(req);
++            return Promise.resolve({ status: 'valid' });
++          },
++        },
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      { agentAddress: WALLET, payment: PAYMENT },
++    );
++    expect(calls).toHaveLength(0);
++    expect(denial?.reason).toMatch(/missing agentkey proof/);
++  });
++
++  it('denies static / unbound challenge (old proof replay shape)', async () => {
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        payment: PAYMENT,
++        agentkey: {
++          proof: JSON.stringify({ challenge: 'countersign-pay', signature: 'ab' }),
++        },
++      },
++    );
++    expect(denial?.reason).toMatch(/payment-bound/);
++  });
++
++  it('denies replay of a proof bound to a different invoice', async () => {
++    const otherInvoice = boundProof({
++      invoiceHash: `0x${'44'.repeat(32)}`,
++    });
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        payment: PAYMENT,
++        agentkey: { proof: otherInvoice },
++      },
++    );
++    expect(denial?.reason).toMatch(/does not match this payment/);
++  });
++
++  it('denies replay of an expired payment-bound proof', async () => {
++    const past = Math.floor(Date.now() / 1000) - 600;
++    const denial = await authorizePaymentAgent(
++      {
++        client: client({ status: 'valid' }),
++        bindings: new Map([['2066', 'ak_hosted']]),
++        agents: await directoryWith(WALLET),
++      },
++      {
++        agentAddress: WALLET,
++        payment: PAYMENT,
++        agentkey: { proof: boundProof({}, past) },
++      },
++    );
++    expect(denial?.reason).toMatch(/expired/);
++  });
+ });
+diff --git a/services/mcp/lib/tools.ts b/services/mcp/lib/tools.ts
+index 56e2337..250d43e 100644
+--- a/services/mcp/lib/tools.ts
++++ b/services/mcp/lib/tools.ts
+@@ -39,13 +39,15 @@ const invoiceInput = {
+     .min(1)
+     .optional()
+     .describe(
+-      'When the gateway has AGENTKEY_VERIFY_ENABLED: JSON Agentkey ownership proof. Fail-closed — pay is refused unless Agentkey verify returns valid.',
++      'When AGENTKEY_VERIFY_ENABLED: JSON Agentkey ownership proof with payment-bound challenge (countersign-pay-v1:…). Fail-closed — pay is refused unless Agentkey verify returns valid.',
+     ),
+   agentkeyId: z
+     .string()
+     .min(1)
+     .optional()
+-    .describe('Optional Agentkey agent id when AGENTKEY_BINDINGS does not map this ERC-8004 agent'),
++    .describe(
++      'Agentkey id only when AGENTKEY_BINDINGS has no entry for this ERC-8004 agent; mismatch against a binding is denied',
++    ),
+ };
+ 
+ /**
+-- 
+2.43.0
+
