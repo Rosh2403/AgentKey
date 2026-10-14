@@ -115,8 +115,16 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     const resolveMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
     if (req.method === "GET" && resolveMatch) {
       const idOrHandle = decodeURIComponent(resolveMatch[1] ?? "");
-      const proofFromQuery = url.searchParams.get("proof") ?? undefined;
-      const proof = proofFromQuery ?? readProofHeader(req);
+      // Proofs must not travel in the query string (logs / Referer / proxy leak).
+      // Prefer x-agentkey-proof (SDK) or Authorization bearer for admin.
+      if (url.searchParams.has("proof")) {
+        sendJson(res, 400, {
+          error:
+            "proof must be sent via x-agentkey-proof header, not query string",
+        });
+        return;
+      }
+      const proof = readProofHeader(req);
       const request: ResolveRequest = {
         idOrHandle,
         includePrivateSubject:

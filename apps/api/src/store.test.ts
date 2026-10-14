@@ -9,6 +9,7 @@ import {
   enableDurableStoreDefault,
   getAgent,
   putAgent,
+  putNewAgent,
   resetStoreForTests,
   resolveStoreBackend,
   revokeAgent,
@@ -82,5 +83,15 @@ describe("durable store", () => {
     delete process.env.AGENTKEY_STORE_PATH;
     enableDurableStoreDefault();
     assert.equal(resolveStoreBackend(), "file");
+  });
+
+  it("putNewAgent is atomic for handle uniqueness", () => {
+    assert.equal(putNewAgent(sampleAgent("ak_first")), true);
+    const collision: StoredAgent = {
+      ...sampleAgent("ak_second"),
+      publicHandle: "handle-ak_first",
+    };
+    assert.equal(putNewAgent(collision), false);
+    assert.equal(getAgent("handle-ak_first")?.id, "ak_first");
   });
 });

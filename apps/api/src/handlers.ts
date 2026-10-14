@@ -19,7 +19,12 @@ import {
   type AuthzCredentials,
   type AuthzErrorCode,
 } from "./authz.js";
-import { getAgent, putAgent, revokeAgent, type StoredAgent } from "./store.js";
+import {
+  getAgent,
+  putNewAgent,
+  revokeAgent,
+  type StoredAgent,
+} from "./store.js";
 import { commitAnchor, revokeAnchor } from "./registry.js";
 import { getIssuerKeys } from "./issuer.js";
 
@@ -28,21 +33,41 @@ export type HandlerError = {
   reason?: string;
 };
 
+/** Max public handle length (bytes as JS string length). */
+const MAX_PUBLIC_HANDLE_LENGTH = 128;
+
+/**
+ * Reject handles that would confuse canonical issue messages (newline injection)
+ * or are empty / oversized. Callers must pass the trimmed handle.
+ */
+export function assertValidPublicHandle(publicHandle: string): void {
+  if (!publicHandle) {
+    throw new Error("publicHandle and publicKey are required");
+  }
+  if (publicHandle.length > MAX_PUBLIC_HANDLE_LENGTH) {
+    throw new Error(
+      `publicHandle must be at most ${MAX_PUBLIC_HANDLE_LENGTH} characters`,
+    );
+  }
+  // eslint-disable-next-line no-control-regex -- intentional: ban C0 controls + DEL
+  if (/[\u0000-\u001f\u007f]/.test(publicHandle)) {
+    throw new Error("publicHandle must not contain control characters");
+  }
+}
+
 function toPublicAgent(agent: StoredAgent): AgentId {
   const { privateSubject: _hidden, ...publicView } = agent;
   return publicView;
 }
 
 export async function issueAgent(request: IssueRequest): Promise<AgentId> {
-  if (!request.publicHandle?.trim() || !request.publicKey?.trim()) {
+  const publicHandle = request.publicHandle?.trim() ?? "";
+  if (!publicHandle || !request.publicKey?.trim()) {
     throw new Error("publicHandle and publicKey are required");
   }
+  assertValidPublicHandle(publicHandle);
   if (!isValidPublicKeyHex(request.publicKey)) {
     throw new Error("publicKey must be a 32-byte Ed25519 key (hex)");
-  }
-  const existing = getAgent(request.publicHandle);
-  if (existing) {
-    throw new Error("publicHandle already registered");
   }
 
   const id = `ak_${randomUUID().replace(/-/g, "")}`;
@@ -60,7 +85,7 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
 
   const issuerAttestation = createIssuerAttestation({
     id,
-    publicHandle: request.publicHandle,
+    publicHandle,
     privateSubject,
     publicKey: request.publicKey,
     issuerPrivateKey: issuer.privateKey,
@@ -68,7 +93,7 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
 
   const agent: StoredAgent = {
     id,
-    publicHandle: request.publicHandle,
+    publicHandle,
     privateSubject,
     publicKey: request.publicKey,
     issuerId: ROOT_ISSUER_ID,
@@ -77,7 +102,10 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
     ...(anchorCommitment !== undefined ? { anchorCommitment } : {}),
     createdAt: new Date().toISOString(),
   };
-  putAgent(agent);
+  // Atomic vs concurrent issue (especially after await commitAnchor).
+  if (!putNewAgent(agent)) {
+    throw new Error("publicHandle already registered");
+  }
   // Issue response includes private subject (registrant is authorized).
   return agent;
 }

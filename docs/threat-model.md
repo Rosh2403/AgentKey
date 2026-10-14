@@ -33,6 +33,7 @@ Off-chain store and optional on-chain registry/anchor sit behind the issuer proc
 - **Transport security** — Local demos often use plain HTTP; production must terminate TLS and restrict network exposure.
 - **CORS `*`** — Suitable for local dashboard demos; not a production browser hardening posture.
 - **MCP process trust** — MCP tools call the same handlers in-process; tool callers with the subject private key (or admin token) inherit those privileges.
+- **Proof transport** — Private-subject ownership proofs must use the `x-agentkey-proof` header (not the query string) to avoid proxy/access-log and Referer leakage.
 
 ## Revoke & private-subject authorization model
 
