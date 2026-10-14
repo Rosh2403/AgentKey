@@ -109,6 +109,23 @@ export function putAgent(agent: StoredAgent): void {
   persist();
 }
 
+/**
+ * Insert a brand-new agent only if neither id nor public handle is taken.
+ * Atomic vs concurrent issue (avoids TOCTOU between getAgent check and put).
+ * Updates (e.g. revoke) should keep using `putAgent`.
+ */
+export function putNewAgent(agent: StoredAgent): boolean {
+  ensureLoaded();
+  const handleKey = agent.publicHandle.toLowerCase();
+  if (agents.has(agent.id) || byHandle.has(handleKey)) {
+    return false;
+  }
+  agents.set(agent.id, agent);
+  byHandle.set(handleKey, agent.id);
+  persist();
+  return true;
+}
+
 export function getAgent(idOrHandle: string): StoredAgent | undefined {
   ensureLoaded();
   const direct = agents.get(idOrHandle);

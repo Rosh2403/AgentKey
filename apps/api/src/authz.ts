@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   canonicalVerifyMessage,
   parseOwnershipProof,
@@ -31,12 +31,13 @@ export interface AuthzCredentials {
   bearerToken?: string;
 }
 
-function safeEqualString(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) {
-    return false;
-  }
+/**
+ * Compare secrets without leaking length via an early return.
+ * Hash both sides to fixed-size digests, then timingSafeEqual.
+ */
+export function safeEqualString(a: string, b: string): boolean {
+  const left = createHash("sha256").update(a, "utf8").digest();
+  const right = createHash("sha256").update(b, "utf8").digest();
   return timingSafeEqual(left, right);
 }
 
