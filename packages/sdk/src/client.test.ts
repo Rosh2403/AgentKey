@@ -21,11 +21,15 @@ describe("AgentkeyClient", () => {
     assert.ok(result.reason);
   });
 
-  it("revoke posts to /v1/agents/{id}/revoke", async () => {
-    const calls: { url: string; method: string }[] = [];
+  it("revoke posts proof to /v1/agents/{id}/revoke", async () => {
+    const calls: { url: string; method: string; body: string }[] = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      calls.push({ url, method: init?.method ?? "GET" });
+      calls.push({
+        url,
+        method: init?.method ?? "GET",
+        body: String(init?.body ?? ""),
+      });
       return new Response(
         JSON.stringify({
           id: "ak_revoked",
@@ -40,11 +44,42 @@ describe("AgentkeyClient", () => {
     }) as typeof fetch;
 
     const client = new AgentkeyClient({ baseUrl: "http://example.test" });
-    const agent = await client.revoke("ak_revoked");
+    const agent = await client.revoke("ak_revoked", {
+      proof: '{"challenge":"r","signature":"ab"}',
+    });
     assert.equal(agent.status, "revoked");
     assert.equal(calls.length, 1);
     assert.match(calls[0]!.url, /\/v1\/agents\/ak_revoked\/revoke$/);
     assert.equal(calls[0]!.method, "POST");
+    assert.match(calls[0]!.body, /"proof"/);
+  });
+
+  it("resolve sends ownership proof header when requesting private subject", async () => {
+    const headersSeen: Record<string, string>[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      headersSeen.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(
+        JSON.stringify({
+          id: "ak_x",
+          publicHandle: "bot",
+          privateSubject: "subj_x",
+          publicKey: "aa".repeat(32),
+          issuerId: "agentkey:root",
+          status: "active",
+          createdAt: new Date().toISOString(),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const client = new AgentkeyClient({ baseUrl: "http://example.test" });
+    await client.resolve({
+      idOrHandle: "ak_x",
+      includePrivateSubject: true,
+      proof: '{"challenge":"p","signature":"cd"}',
+    });
+    const headers = headersSeen[0] as Record<string, string>;
+    assert.equal(headers["x-agentkey-proof"], '{"challenge":"p","signature":"cd"}');
   });
 
   it("agentKeys generates Ed25519 material and proofs", () => {

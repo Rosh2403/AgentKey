@@ -2,6 +2,7 @@ import type {
   AgentId,
   IssueRequest,
   ResolveRequest,
+  RevokeRequest,
   VerifyRequest,
   VerifyResult,
 } from "@agentkey/protocol";
@@ -14,13 +15,17 @@ import {
 
 export interface AgentkeyClientOptions {
   baseUrl: string;
-  /** Optional bearer for authorized private-subject resolve. */
+  /**
+   * Optional issuer-admin bearer (`AGENTKEY_ISSUER_ADMIN_TOKEN` on the API).
+   * Off by default on the server — only useful when that env is explicitly set.
+   */
   accessToken?: string;
 }
 
 /**
- * Minimal builder-facing client for issue / resolve / verify.
+ * Minimal builder-facing client for issue / resolve / verify / revoke.
  * Verify transport failures fail closed (`status: "error"`).
+ * Privileged ops require ownership proof and/or issuer admin token.
  */
 export class AgentkeyClient {
   constructor(private readonly options: AgentkeyClientOptions) {}
@@ -36,7 +41,11 @@ export class AgentkeyClient {
     }
     const q = params.toString();
     const path = `/v1/agents/${encodeURIComponent(request.idOrHandle)}${q ? `?${q}` : ""}`;
-    return this.getJson<AgentId>(path);
+    const extra: Record<string, string> = {};
+    if (request.proof) {
+      extra["x-agentkey-proof"] = request.proof;
+    }
+    return this.getJson<AgentId>(path, extra);
   }
 
   async verify(request: VerifyRequest): Promise<VerifyResult> {
@@ -48,16 +57,27 @@ export class AgentkeyClient {
     }
   }
 
-  /** Revoke an agent by id or public handle. Subsequent verify → `revoked`. */
-  async revoke(idOrHandle: string): Promise<AgentId> {
+  /**
+   * Revoke an agent by id or public handle.
+   * Requires ownership `proof` (preferred) or issuer-admin `accessToken`.
+   */
+  async revoke(
+    idOrHandle: string,
+    options: Pick<RevokeRequest, "proof"> = {},
+  ): Promise<AgentId> {
     const path = `/v1/agents/${encodeURIComponent(idOrHandle)}/revoke`;
-    return this.postJson<AgentId>(path, {});
+    const body: Record<string, string> = {};
+    if (options.proof) {
+      body.proof = options.proof;
+    }
+    return this.postJson<AgentId>(path, body);
   }
 
-  private headers(): Record<string, string> {
+  private headers(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json",
+      ...extra,
     };
     if (this.options.accessToken) {
       headers.authorization = `Bearer ${this.options.accessToken}`;
@@ -65,10 +85,13 @@ export class AgentkeyClient {
     return headers;
   }
 
-  private async getJson<T>(path: string): Promise<T> {
+  private async getJson<T>(
+    path: string,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     const res = await fetch(`${this.options.baseUrl}${path}`, {
       method: "GET",
-      headers: this.headers(),
+      headers: this.headers(extraHeaders),
     });
     if (!res.ok) {
       throw new Error(`GET ${path} failed: ${res.status}`);
@@ -107,6 +130,7 @@ export type {
   AgentId,
   IssueRequest,
   ResolveRequest,
+  RevokeRequest,
   VerifyRequest,
   VerifyResult,
   KeyPairHex,

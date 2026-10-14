@@ -50,9 +50,20 @@ curl -sS -X POST http://127.0.0.1:8787/v1/agents \
 Response includes `id`, `publicHandle`, `privateSubject` (dual model), `issuerAttestation`, `issuerId: "agentkey:root"`.
 
 ```bash
-# Resolve (privateSubject omitted unless ?includePrivateSubject=true)
+# Resolve (public — privateSubject never returned without authz)
 curl -sS http://127.0.0.1:8787/v1/agents/demo-bot
+
+# Private subject requires ownership proof (or issuer admin bearer when enabled)
+curl -sS "http://127.0.0.1:8787/v1/agents/<id>?includePrivateSubject=true" \
+  -H 'x-agentkey-proof: {"challenge":"private-read","signature":"<hex>"}'
+
+# Revoke requires the same ownership proof (unauthenticated → 401)
+curl -sS -X POST http://127.0.0.1:8787/v1/agents/<id>/revoke \
+  -H 'content-type: application/json' \
+  -d '{"proof":"{\"challenge\":\"revoke\",\"signature\":\"<hex>\"}"}'
 ```
+
+See [docs/threat-model.md](../docs/threat-model.md) for the authz model (prototype disclaimer).
 
 Proof wire format (JSON string in `proof`):
 
