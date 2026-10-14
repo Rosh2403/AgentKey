@@ -65,7 +65,7 @@ That runs a small demo: generate subject keys → `agentkey_issue` → `agentkey
 | `agentkey_issue` | Register handle + subject pubkey |
 | `agentkey_resolve` | Resolve by id or public handle |
 | `agentkey_verify` | Ownership proof → typed status |
-| `agentkey_revoke` | Revoke; later verify → `revoked` |
+| `agentkey_revoke` | Revoke with ownership `proof` (or admin token); later verify → `revoked` |
 
 Programmatic dispatch (`apps/mcp/src/tools.ts` — same handlers as HTTP):
 
@@ -91,7 +91,7 @@ const verdict = await invokeTool("agentkey_verify", {
 // verdict.status === "valid"
 ```
 
-Wire an MCP host to those tool names with the same JSON args as HTTP (`publicHandle` / `publicKey`, then `agentId` / `proof`).
+Wire an MCP host to those tool names with the same JSON args as HTTP (`publicHandle` / `publicKey`, then `agentId` / `proof`). Revoke and private-subject resolve also need `proof` (or `adminToken` when `AGENTKEY_ISSUER_ADMIN_TOKEN` is set). See [docs/threat-model.md](../../docs/threat-model.md).
 
 ## Troubleshooting: `error` vs `invalid` vs `revoked`
 

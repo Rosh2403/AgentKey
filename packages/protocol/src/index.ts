@@ -69,8 +69,24 @@ export interface IssueRequest {
 export interface ResolveRequest {
   /** Resolve by id or public handle. */
   idOrHandle: string;
-  /** If true and authorized, include privateSubject. */
+  /**
+   * If true, include privateSubject only when authorized
+   * (ownership proof or issuer admin). Without authz → denied (fail closed).
+   */
   includePrivateSubject?: boolean;
+  /**
+   * JSON ownership proof (same wire format as verify). Required when
+   * `includePrivateSubject` is true unless issuer admin bearer is used.
+   */
+  proof?: string;
+}
+
+/** Privileged revoke — requires ownership proof and/or issuer admin. */
+export interface RevokeRequest {
+  /** Revoke by id or public handle. */
+  idOrHandle: string;
+  /** JSON ownership proof signed by the subject key for the canonical agent id. */
+  proof?: string;
 }
 
 /**

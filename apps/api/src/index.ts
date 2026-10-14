@@ -1,10 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { IssueRequest, ResolveRequest, VerifyRequest } from "@agentkey/protocol";
+import type {
+  IssueRequest,
+  ResolveRequest,
+  RevokeRequest,
+  VerifyRequest,
+} from "@agentkey/protocol";
+import { parseBearerToken } from "./authz.js";
 import {
   issueAgent,
   resolveAgent,
   revokeAgentIdentity,
   verifyAgent,
+  type HandlerError,
 } from "./handlers.js";
 import { getIssuerKeys } from "./issuer.js";
 import { enableDurableStoreDefault, resolveStoreBackend, resolveStorePath } from "./store.js";
@@ -27,7 +34,8 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 const corsHeaders: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization, accept",
+  "access-control-allow-headers":
+    "content-type, authorization, accept, x-agentkey-proof",
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -38,6 +46,26 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     ...corsHeaders,
   });
   res.end(payload);
+}
+
+function statusForHandlerError(error: HandlerError["error"]): number {
+  switch (error) {
+    case "unauthorized":
+      return 401;
+    case "forbidden":
+      return 403;
+    case "not_found":
+      return 404;
+    default:
+      return 400;
+  }
+}
+
+function readProofHeader(req: IncomingMessage): string | undefined {
+  const raw = req.headers["x-agentkey-proof"];
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (Array.isArray(raw) && raw[0]?.trim()) return raw[0].trim();
+  return undefined;
 }
 
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -66,9 +94,18 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     const revokeMatch = pathname.match(/^\/v1\/agents\/([^/]+)\/revoke$/);
     if (req.method === "POST" && revokeMatch) {
       const idOrHandle = decodeURIComponent(revokeMatch[1] ?? "");
-      const result = await revokeAgentIdentity(idOrHandle);
+      const body = (await readJson(req)) as Partial<RevokeRequest>;
+      const request: RevokeRequest = {
+        idOrHandle,
+        ...(typeof body.proof === "string" ? { proof: body.proof } : {}),
+      };
+      const bearerToken = parseBearerToken(req.headers.authorization);
+      const result = await revokeAgentIdentity(request, {
+        ...(bearerToken !== undefined ? { bearerToken } : {}),
+        ...(typeof body.proof === "string" ? { proof: body.proof } : {}),
+      });
       if ("error" in result) {
-        sendJson(res, 404, result);
+        sendJson(res, statusForHandlerError(result.error), result);
         return;
       }
       sendJson(res, 200, result);
@@ -78,14 +115,21 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     const resolveMatch = pathname.match(/^\/v1\/agents\/([^/]+)$/);
     if (req.method === "GET" && resolveMatch) {
       const idOrHandle = decodeURIComponent(resolveMatch[1] ?? "");
+      const proofFromQuery = url.searchParams.get("proof") ?? undefined;
+      const proof = proofFromQuery ?? readProofHeader(req);
       const request: ResolveRequest = {
         idOrHandle,
         includePrivateSubject:
           url.searchParams.get("includePrivateSubject") === "true",
+        ...(proof !== undefined ? { proof } : {}),
       };
-      const result = resolveAgent(request);
+      const bearerToken = parseBearerToken(req.headers.authorization);
+      const result = resolveAgent(request, {
+        ...(bearerToken !== undefined ? { bearerToken } : {}),
+        ...(proof !== undefined ? { proof } : {}),
+      });
       if ("error" in result) {
-        sendJson(res, 404, result);
+        sendJson(res, statusForHandlerError(result.error), result);
         return;
       }
       sendJson(res, 200, result);

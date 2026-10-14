@@ -50,9 +50,11 @@ Copy `.env.example` → `.env` only if you want persistent issuer keys (`pnpm is
 | **Issue** | `POST /v1/agents` | `agentkey_issue` |
 | **Resolve** | `GET /v1/agents/{id}` | `agentkey_resolve` |
 | **Verify** | `POST /v1/verify` → typed result | `agentkey_verify` → same typed enum |
-| **Revoke** | revoke route | `agentkey_revoke` |
+| **Revoke** | `POST /v1/agents/{id}/revoke` (+ ownership proof) | `agentkey_revoke` (+ `proof`) |
 
 Verify input: Agent ID + ownership proof (signature / challenge response) + optional context. Output is structured and machine-checkable — never free-text “maybe.”
+
+Revoke and `includePrivateSubject=true` require an ownership proof (or optional issuer-admin bearer — **off by default**). See [docs/threat-model.md](./docs/threat-model.md).
 
 HTTP and MCP share the same handlers and typed verify answers.
 
@@ -126,9 +128,12 @@ Also: `pnpm example:register-verify` and [examples/register-and-verify.md](./exa
 ## Security
 
 - **Fail closed** on verify errors (malformed proof, unknown issuer, policy/clock skew, transport failure).
+- **Revoke / private-subject authz** — ownership proof (or optional `AGENTKEY_ISSUER_ADMIN_TOKEN`, off by default); unauthenticated privileged calls → 401/403.
 - **No secrets in git** — env / secret manager only; `.env.example` uses placeholders.
-- Private keys are never logged or returned from resolve.
+- Private keys are never logged or returned from public resolve.
 - Issuer keys: set via env, or ephemeral in-memory keys for local/dev only.
+
+This is a **prototype**, not a production security audit. Trust boundaries, what is/isn’t protected, and residual risks: **[docs/threat-model.md](./docs/threat-model.md)**.
 
 ## Hybrid anchoring (optional)
 

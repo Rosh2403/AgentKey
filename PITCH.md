@@ -22,7 +22,7 @@ Agentkey is **issue → resolve → verify**:
 | Hybrid anchoring | Off-chain by default; optional on-chain commit for auditability |
 | Fail-closed | Parse / crypto / transport failure → `error` / deny — never soft-allow |
 
-Builders integrate the SDK or MCP tools; platforms verify without adopting Agentkey’s UI. Moat today: typed verify semantics, dual-ID privacy model, MCP-native surface, durable store + revoke, parallel Rust verify core for conformance — not a dashboard.
+Builders integrate the SDK or MCP tools; platforms verify without adopting Agentkey’s UI. Moat today: typed verify semantics, dual-ID privacy model, MCP-native surface, durable store + authz-gated revoke, parallel Rust verify core for conformance — not a dashboard. Prototype — see [docs/threat-model.md](./docs/threat-model.md); not a production security audit.
 
 ## Why Monad
 

@@ -5,6 +5,7 @@ import {
   type AgentId,
   type IssueRequest,
   type ResolveRequest,
+  type RevokeRequest,
   type VerifyRequest,
   type VerifyResult,
 } from "@agentkey/protocol";
@@ -13,9 +14,19 @@ import {
   isValidPublicKeyHex,
   verifyProof,
 } from "@agentkey/crypto";
+import {
+  authorizeAgentControl,
+  type AuthzCredentials,
+  type AuthzErrorCode,
+} from "./authz.js";
 import { getAgent, putAgent, revokeAgent, type StoredAgent } from "./store.js";
 import { commitAnchor, revokeAnchor } from "./registry.js";
 import { getIssuerKeys } from "./issuer.js";
+
+export type HandlerError = {
+  error: AuthzErrorCode | "not_found";
+  reason?: string;
+};
 
 function toPublicAgent(agent: StoredAgent): AgentId {
   const { privateSubject: _hidden, ...publicView } = agent;
@@ -73,16 +84,31 @@ export async function issueAgent(request: IssueRequest): Promise<AgentId> {
 
 export function resolveAgent(
   request: ResolveRequest,
-): AgentId | { error: string } {
+  credentials: AuthzCredentials = {},
+): AgentId | HandlerError {
   const agent = getAgent(request.idOrHandle);
   if (!agent) {
     return { error: "not_found" };
   }
-  if (request.includePrivateSubject) {
-    // Slice-1: no real authz yet — opt-in flag only. Production must authorize.
-    return agent;
+  if (!request.includePrivateSubject) {
+    return toPublicAgent(agent);
   }
-  return toPublicAgent(agent);
+
+  const proof = request.proof ?? credentials.proof;
+  const creds: AuthzCredentials = {
+    ...(credentials.bearerToken !== undefined
+      ? { bearerToken: credentials.bearerToken }
+      : {}),
+    ...(proof !== undefined ? { proof } : {}),
+  };
+  const decision = authorizeAgentControl(agent, creds);
+  if (!decision.ok) {
+    return {
+      error: decision.error,
+      reason: decision.reason,
+    };
+  }
+  return agent;
 }
 
 export function verifyAgent(request: VerifyRequest): VerifyResult {
@@ -116,19 +142,53 @@ export function verifyAgent(request: VerifyRequest): VerifyResult {
 }
 
 export async function revokeAgentIdentity(
-  idOrHandle: string,
-): Promise<AgentId | { error: string }> {
-  const existing = getAgent(idOrHandle);
-  if (!existing) {
-    return { error: "not_found" };
+  request: RevokeRequest,
+  credentials: AuthzCredentials = {},
+): Promise<AgentId | HandlerError> {
+  if (!request.idOrHandle?.trim()) {
+    return { error: "not_found", reason: "idOrHandle is required" };
   }
+
+  const hasCreds = Boolean(
+    credentials.proof?.trim() ||
+      request.proof?.trim() ||
+      credentials.bearerToken?.trim(),
+  );
+  if (!hasCreds) {
+    return {
+      error: "unauthorized",
+      reason:
+        "ownership proof or issuer admin token required (admin token off by default)",
+    };
+  }
+
+  const existing = getAgent(request.idOrHandle);
+  if (!existing) {
+    return { error: "not_found", reason: "agent not found" };
+  }
+
+  const proof = request.proof ?? credentials.proof;
+  const creds: AuthzCredentials = {
+    ...(credentials.bearerToken !== undefined
+      ? { bearerToken: credentials.bearerToken }
+      : {}),
+    ...(proof !== undefined ? { proof } : {}),
+  };
+  const decision = authorizeAgentControl(existing, creds);
+  if (!decision.ok) {
+    return {
+      error: decision.error,
+      reason: decision.reason,
+    };
+  }
+
   // If this ID was anchored on-chain, revoke the chain record first when configured.
   if (existing.anchorCommitment) {
     await revokeAnchor(existing.id);
   }
-  const revoked = revokeAgent(idOrHandle);
+  const revoked = revokeAgent(request.idOrHandle);
   if (!revoked) {
-    return { error: "not_found" };
+    return { error: "not_found", reason: "agent not found" };
   }
   return toPublicAgent(revoked);
 }
