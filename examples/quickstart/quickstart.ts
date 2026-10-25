@@ -44,7 +44,8 @@ async function main(): Promise<void> {
     privateSubject: resolved.privateSubject ?? null,
   });
 
-  const challenge = `quickstart-${Date.now()}`;
+  // One-time challenge: expires in 5 min and works once.
+  const { challenge } = await client.challenge("verify");
   const proof = agentKeys.createProof({
     agentId: agent.id,
     challenge,
@@ -63,7 +64,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log("4) fail-closed — malformed proof → error (never soft-allow)");
+  console.log("4) replay — same proof again → invalid (challenge already used)");
+  const replay = await client.verify({ agentId: agent.id, proof });
+  console.log("   ", replay);
+  if (replay.status !== "invalid") {
+    process.exitCode = 1;
+    console.error("Expected status \"invalid\" for a replayed proof.");
+    return;
+  }
+
+  console.log("5) fail-closed — malformed proof → error (never soft-allow)");
   const closed = await client.verify({
     agentId: agent.id,
     proof: "not-a-proof",

@@ -5,6 +5,7 @@ import {
   generateKeyPair,
 } from "@agentkey/crypto";
 import { clearStoreForTests } from "@agentkey/api/store";
+import { issueChallenge } from "@agentkey/api/handlers";
 import {
   resetIssuerKeysForTests,
   setIssuerKeysForTests,
@@ -22,6 +23,7 @@ describe("mcp tools", () => {
     clearStoreForTests();
     resetIssuerKeysForTests();
     setIssuerKeysForTests(generateKeyPair());
+    delete process.env.AGENTKEY_ISSUER_ADMIN_TOKEN;
   });
 
   it("fails closed on missing verify inputs", () => {
@@ -48,7 +50,7 @@ describe("mcp tools", () => {
 
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "mcp-challenge",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const verdict = agentkeyVerify({
@@ -58,7 +60,67 @@ describe("mcp tools", () => {
     assert.equal(verdict.status, "valid");
   });
 
-  it("revoke end-to-end: verify returns revoked", async () => {
+  it("resolve private subject without proof is denied", async () => {
+    const keys = generateKeyPair();
+    const issued = await agentkeyIssue({
+      publicHandle: `mcp-priv-${Date.now()}`,
+      publicKey: keys.publicKey,
+    });
+    assert.equal(issued.ok, true);
+    if (!issued.ok) return;
+
+    const denied = agentkeyResolve({
+      idOrHandle: issued.agent.id,
+      includePrivateSubject: true,
+    });
+    assert.equal(denied.ok, false);
+    if (!denied.ok) {
+      assert.equal(denied.error, "unauthorized");
+    }
+  });
+
+  it("resolve private subject with ownership proof", async () => {
+    const keys = generateKeyPair();
+    const issued = await agentkeyIssue({
+      publicHandle: `mcp-priv-ok-${Date.now()}`,
+      publicKey: keys.publicKey,
+    });
+    assert.equal(issued.ok, true);
+    if (!issued.ok) return;
+
+    const proof = createOwnershipProof({
+      agentId: issued.agent.id,
+      challenge: issueChallenge("resolve").challenge,
+      privateKey: keys.privateKey,
+    });
+    const resolved = agentkeyResolve({
+      idOrHandle: issued.agent.id,
+      includePrivateSubject: true,
+      proof,
+    });
+    assert.equal(resolved.ok, true);
+    if (resolved.ok) {
+      assert.equal(resolved.agent.privateSubject, issued.agent.privateSubject);
+    }
+  });
+
+  it("revoke without proof is denied", async () => {
+    const keys = generateKeyPair();
+    const issued = await agentkeyIssue({
+      publicHandle: `mcp-revoke-denied-${Date.now()}`,
+      publicKey: keys.publicKey,
+    });
+    assert.equal(issued.ok, true);
+    if (!issued.ok) return;
+
+    const denied = await agentkeyRevoke({ idOrHandle: issued.agent.id });
+    assert.equal(denied.ok, false);
+    if (!denied.ok) {
+      assert.equal(denied.error, "unauthorized");
+    }
+  });
+
+  it("revoke end-to-end with ownership proof: verify returns revoked", async () => {
     const keys = generateKeyPair();
     const issued = await agentkeyIssue({
       publicHandle: `mcp-revoke-${Date.now()}`,
@@ -67,7 +129,15 @@ describe("mcp tools", () => {
     assert.equal(issued.ok, true);
     if (!issued.ok) return;
 
-    const revoked = await agentkeyRevoke({ idOrHandle: issued.agent.id });
+    const revokeProof = createOwnershipProof({
+      agentId: issued.agent.id,
+      challenge: issueChallenge("revoke").challenge,
+      privateKey: keys.privateKey,
+    });
+    const revoked = await agentkeyRevoke({
+      idOrHandle: issued.agent.id,
+      proof: revokeProof,
+    });
     assert.equal(revoked.ok, true);
     if (revoked.ok) {
       assert.equal(revoked.agent.status, "revoked");
@@ -75,7 +145,7 @@ describe("mcp tools", () => {
 
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "after-revoke",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const verdict = agentkeyVerify({
@@ -92,7 +162,7 @@ describe("mcp tools", () => {
     assert.equal(result.status, "error");
   });
 
-  it("invokeTool dispatches revoke", async () => {
+  it("invokeTool dispatches revoke with proof", async () => {
     const keys = generateKeyPair();
     const issued = await agentkeyIssue({
       publicHandle: `mcp-invoke-revoke-${Date.now()}`,
@@ -100,8 +170,14 @@ describe("mcp tools", () => {
     });
     assert.equal(issued.ok, true);
     if (!issued.ok) return;
+    const proof = createOwnershipProof({
+      agentId: issued.agent.id,
+      challenge: issueChallenge("revoke").challenge,
+      privateKey: keys.privateKey,
+    });
     const result = (await invokeTool("agentkey_revoke", {
       idOrHandle: issued.agent.id,
+      proof,
     })) as { ok: boolean; agent?: { status: string } };
     assert.equal(result.ok, true);
     assert.equal(result.agent?.status, "revoked");

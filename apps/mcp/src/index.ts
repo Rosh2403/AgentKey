@@ -1,6 +1,7 @@
 import { generateKeyPair, createOwnershipProof } from "@agentkey/crypto";
 import {
   TOOLS,
+  agentkeyChallenge,
   agentkeyIssue,
   agentkeyResolve,
   agentkeyVerify,
@@ -22,10 +23,11 @@ async function main(): Promise<void> {
   let demoVerify = agentkeyVerify({ agentId: "", proof: "" });
   let demoResolve: unknown = { ok: false, error: "issue failed" };
 
-  if (issued.ok) {
+  const challenge = agentkeyChallenge({ purpose: "verify" });
+  if (issued.ok && challenge.ok) {
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "mcp-demo-challenge",
+      challenge: challenge.challenge.challenge,
       privateKey: keys.privateKey,
     });
     demoVerify = agentkeyVerify({ agentId: issued.agent.id, proof });

@@ -50,17 +50,35 @@ curl -sS -X POST http://127.0.0.1:8787/v1/agents \
 Response includes `id`, `publicHandle`, `privateSubject` (dual model), `issuerAttestation`, `issuerId: "agentkey:root"`.
 
 ```bash
-# Resolve (privateSubject omitted unless ?includePrivateSubject=true)
+# Resolve (public — privateSubject never returned without authz)
 curl -sS http://127.0.0.1:8787/v1/agents/demo-bot
+
+# Every proof signs a one-time challenge (5 min, single use, one purpose)
+curl -sS -X POST http://127.0.0.1:8787/v1/challenges \
+  -H 'content-type: application/json' -d '{"purpose":"resolve"}'
+# → {"challenge":"akc_…","purpose":"resolve","expiresAt":"…"}
+
+# Private subject requires ownership proof (or issuer admin bearer when enabled)
+curl -sS "http://127.0.0.1:8787/v1/agents/<id>?includePrivateSubject=true" \
+  -H 'x-agentkey-proof: {"challenge":"akc_<from purpose=resolve>","signature":"<hex>"}'
+
+# Revoke requires the same ownership proof (unauthenticated → 401)
+curl -sS -X POST http://127.0.0.1:8787/v1/agents/<id>/revoke \
+  -H 'content-type: application/json' \
+  -d '{"proof":"{\"challenge\":\"akc_<from purpose=revoke>\",\"signature\":\"<hex>\"}"}'
 ```
+
+See [docs/threat-model.md](../docs/threat-model.md) for the authz model (prototype disclaimer).
 
 Proof wire format (JSON string in `proof`):
 
 ```json
-{ "challenge": "any-string", "signature": "<hex Ed25519 over canonical message>" }
+{ "challenge": "akc_…", "signature": "<hex Ed25519 over canonical message>" }
 ```
 
-Canonical message: `agentkey-verify-v1\n{agentId}\n{challenge}` (signed by the subject private key). Prefer `pnpm example:quickstart` or `agentKeys.createProof` from `@agentkey/sdk` over hand-rolling signatures.
+Canonical message: `agentkey-verify-v1\n{agentId}\n{challenge}` (signed by the subject private key).
+
+**Replay protection.** The challenge must either come from `POST /v1/challenges` (expires in 5 minutes, accepted once, only for the purpose it was issued for) or be one *you* chose and pass as `expectedChallenge` in the verify body. Anything else is `invalid`, so a proof someone saw once can't be reused, and a login proof can never revoke an agent. Prefer `pnpm example:quickstart` or `agentKeys.createProof` from `@agentkey/sdk` over hand-rolling signatures.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/v1/verify \
@@ -83,9 +101,10 @@ const agent = await ak.issue({
   publicHandle: "demo-bot",
   publicKey: subject.publicKey,
 });
+const { challenge } = await ak.challenge("verify"); // one-time, 5 min
 const proof = agentKeys.createProof({
   agentId: agent.id,
-  challenge: "login-1",
+  challenge,
   privateKey: subject.privateKey,
 });
 const verdict = await ak.verify({ agentId: agent.id, proof });

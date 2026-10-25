@@ -23,6 +23,22 @@ async function readJson(res: Response): Promise<unknown> {
   return (await res.json()) as unknown;
 }
 
+/** One-time challenge from the API (5 min, single use). */
+export async function requestChallenge(
+  purpose: "verify" | "revoke" | "resolve" = "verify",
+): Promise<string> {
+  const res = await fetch(url("/v1/challenges"), {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ purpose }),
+  });
+  const body = (await readJson(res)) as { challenge?: unknown };
+  if (!res.ok || typeof body.challenge !== "string") {
+    throw new Error(`challenge request failed (${res.status})`);
+  }
+  return body.challenge;
+}
+
 /**
  * Resolve by public handle or agent id.
  * Public resolve never returns privateSubject unless includePrivateSubject.

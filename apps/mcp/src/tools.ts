@@ -1,13 +1,17 @@
 import type {
   AgentId,
+  ChallengePurpose,
+  ChallengeResponse,
   IssueRequest,
   ResolveRequest,
+  RevokeRequest,
   VerifyRequest,
   VerifyResult,
 } from "@agentkey/protocol";
 import { failClosed } from "@agentkey/protocol";
 import {
   issueAgent,
+  issueChallenge,
   resolveAgent,
   revokeAgentIdentity,
   verifyAgent,
@@ -15,10 +19,14 @@ import {
 
 /**
  * MCP tool surface — same capabilities as HTTP:
- * agentkey_issue | agentkey_resolve | agentkey_verify | agentkey_revoke
+ * agentkey_challenge | agentkey_issue | agentkey_resolve | agentkey_verify | agentkey_revoke
+ *
+ * Privileged ops (revoke, private-subject resolve) require ownership `proof`
+ * and/or issuer admin bearer (`adminToken` / env AGENTKEY_ISSUER_ADMIN_TOKEN).
  */
 
 export type McpToolName =
+  | "agentkey_challenge"
   | "agentkey_issue"
   | "agentkey_resolve"
   | "agentkey_verify"
@@ -31,13 +39,18 @@ export interface McpToolDescriptor {
 
 export const TOOLS: McpToolDescriptor[] = [
   {
+    name: "agentkey_challenge",
+    description:
+      "Get a one-time challenge (5 min, single use) for an agent to sign; purpose: verify | revoke | resolve",
+  },
+  {
     name: "agentkey_issue",
     description: "Register/issue an Agent ID under the Agentkey root issuer",
   },
   {
     name: "agentkey_resolve",
     description:
-      "Resolve a public handle or Agent ID (dual: private subject only when authorized)",
+      "Resolve a public handle or Agent ID (private subject only with ownership proof or issuer admin)",
   },
   {
     name: "agentkey_verify",
@@ -46,9 +59,20 @@ export const TOOLS: McpToolDescriptor[] = [
   {
     name: "agentkey_revoke",
     description:
-      "Revoke an Agent ID; subsequent verify returns status revoked (fail closed otherwise)",
+      "Revoke an Agent ID (requires ownership proof or issuer admin); subsequent verify → revoked",
   },
 ];
+
+export function agentkeyChallenge(input: {
+  purpose?: ChallengePurpose;
+}): { ok: true; challenge: ChallengeResponse } | { ok: false; error: string } {
+  try {
+    return { ok: true, challenge: issueChallenge(input.purpose ?? "verify") };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "challenge failed";
+    return { ok: false, error: message };
+  }
+}
 
 export async function agentkeyIssue(
   input: Partial<IssueRequest>,
@@ -72,19 +96,32 @@ export async function agentkeyIssue(
 }
 
 export function agentkeyResolve(
-  input: Partial<ResolveRequest>,
-): { ok: true; agent: AgentId } | { ok: false; error: string } {
+  input: Partial<ResolveRequest> & { adminToken?: string },
+): { ok: true; agent: AgentId } | { ok: false; error: string; reason?: string } {
   if (!input.idOrHandle?.trim()) {
     return { ok: false, error: "idOrHandle is required" };
   }
-  const result = resolveAgent({
-    idOrHandle: input.idOrHandle,
-    ...(input.includePrivateSubject !== undefined
-      ? { includePrivateSubject: input.includePrivateSubject }
-      : {}),
-  });
+  const result = resolveAgent(
+    {
+      idOrHandle: input.idOrHandle,
+      ...(input.includePrivateSubject !== undefined
+        ? { includePrivateSubject: input.includePrivateSubject }
+        : {}),
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    },
+    {
+      ...(input.adminToken !== undefined
+        ? { bearerToken: input.adminToken }
+        : {}),
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    },
+  );
   if ("error" in result) {
-    return { ok: false, error: result.error };
+    return {
+      ok: false,
+      error: result.error,
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+    };
   }
   return { ok: true, agent: result };
 }
@@ -97,6 +134,9 @@ export function agentkeyVerify(input: Partial<VerifyRequest>): VerifyResult {
     return verifyAgent({
       agentId: input.agentId,
       proof: input.proof,
+      ...(input.expectedChallenge !== undefined
+        ? { expectedChallenge: input.expectedChallenge }
+        : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
     });
   } catch (err) {
@@ -106,14 +146,31 @@ export function agentkeyVerify(input: Partial<VerifyRequest>): VerifyResult {
 }
 
 export async function agentkeyRevoke(
-  input: Partial<{ idOrHandle: string }>,
-): Promise<{ ok: true; agent: AgentId } | { ok: false; error: string }> {
+  input: Partial<RevokeRequest> & { adminToken?: string },
+): Promise<
+  { ok: true; agent: AgentId } | { ok: false; error: string; reason?: string }
+> {
   if (!input.idOrHandle?.trim()) {
     return { ok: false, error: "idOrHandle is required" };
   }
-  const result = await revokeAgentIdentity(input.idOrHandle);
+  const result = await revokeAgentIdentity(
+    {
+      idOrHandle: input.idOrHandle,
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    },
+    {
+      ...(input.adminToken !== undefined
+        ? { bearerToken: input.adminToken }
+        : {}),
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    },
+  );
   if ("error" in result) {
-    return { ok: false, error: result.error };
+    return {
+      ok: false,
+      error: result.error,
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+    };
   }
   return { ok: true, agent: result };
 }
@@ -123,14 +180,20 @@ export async function invokeTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name) {
+    case "agentkey_challenge":
+      return agentkeyChallenge(args as { purpose?: ChallengePurpose });
     case "agentkey_issue":
       return agentkeyIssue(args as Partial<IssueRequest>);
     case "agentkey_resolve":
-      return agentkeyResolve(args as Partial<ResolveRequest>);
+      return agentkeyResolve(
+        args as Partial<ResolveRequest> & { adminToken?: string },
+      );
     case "agentkey_verify":
       return agentkeyVerify(args as Partial<VerifyRequest>);
     case "agentkey_revoke":
-      return agentkeyRevoke(args as Partial<{ idOrHandle: string }>);
+      return agentkeyRevoke(
+        args as Partial<RevokeRequest> & { adminToken?: string },
+      );
     default: {
       const _exhaustive: never = name;
       return { ok: false, error: `unknown tool: ${_exhaustive}` };

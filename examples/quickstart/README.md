@@ -41,9 +41,10 @@ const agent = await client.issue({
   publicHandle: "my-bot",
   publicKey: subject.publicKey,
 });
+const { challenge } = await client.challenge("verify"); // one-time, 5 min
 const proof = agentKeys.createProof({
   agentId: agent.id,
-  challenge: "login-1",
+  challenge,
   privateKey: subject.privateKey,
 });
 const result = await client.verify({ agentId: agent.id, proof });
@@ -62,10 +63,11 @@ That runs a small demo: generate subject keys → `agentkey_issue` → `agentkey
 
 | Tool | Role |
 | --- | --- |
+| `agentkey_challenge` | One-time challenge to sign (`verify` / `revoke` / `resolve`; 5 min, single use) |
 | `agentkey_issue` | Register handle + subject pubkey |
 | `agentkey_resolve` | Resolve by id or public handle |
 | `agentkey_verify` | Ownership proof → typed status |
-| `agentkey_revoke` | Revoke; later verify → `revoked` |
+| `agentkey_revoke` | Revoke with ownership `proof` (or admin token); later verify → `revoked` |
 
 Programmatic dispatch (`apps/mcp/src/tools.ts` — same handlers as HTTP):
 
@@ -79,9 +81,11 @@ const issued = await invokeTool("agentkey_issue", {
   publicKey: keys.publicKey,
 });
 if (!issued.ok) throw new Error(issued.error);
+const ch = await invokeTool("agentkey_challenge", { purpose: "verify" });
+if (!ch.ok) throw new Error(ch.error);
 const proof = createOwnershipProof({
   agentId: issued.agent.id,
-  challenge: "mcp-1",
+  challenge: ch.challenge.challenge,
   privateKey: keys.privateKey,
 });
 const verdict = await invokeTool("agentkey_verify", {
@@ -91,7 +95,7 @@ const verdict = await invokeTool("agentkey_verify", {
 // verdict.status === "valid"
 ```
 
-Wire an MCP host to those tool names with the same JSON args as HTTP (`publicHandle` / `publicKey`, then `agentId` / `proof`).
+Wire an MCP host to those tool names with the same JSON args as HTTP (`publicHandle` / `publicKey`, then `agentId` / `proof`). Revoke and private-subject resolve also need `proof` (or `adminToken` when `AGENTKEY_ISSUER_ADMIN_TOKEN` is set). See [docs/threat-model.md](../../docs/threat-model.md).
 
 ## Troubleshooting: `error` vs `invalid` vs `revoked`
 
@@ -100,7 +104,7 @@ Verify always returns a typed status — never free-text “maybe.” Judges: re
 | Status | Meaning | Typical cause |
 | --- | --- | --- |
 | **`valid`** | Proof checks out | Subject signed the challenge for this agent id |
-| **`invalid`** | Proof well-formed but wrong | Wrong key, wrong challenge/agentId binding, bad signature |
+| **`invalid`** | Proof well-formed but wrong | Wrong key, wrong challenge/agentId binding, bad signature, **replayed or expired challenge** |
 | **`unknown`** | No such agent | Typo’d id / never issued / different store |
 | **`revoked`** | Agent was revoked | `agentkey_revoke` / `POST` revoke path already ran |
 | **`error`** | Fail-closed deny | Malformed proof JSON, missing fields, crypto/parse/transport failure, broken issuer attestation |
