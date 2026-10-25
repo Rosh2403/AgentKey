@@ -14,6 +14,7 @@ import {
   type HandlerError,
 } from "./handlers.js";
 import { getIssuerKeys } from "./issuer.js";
+import { isChallengePurpose, issueChallenge } from "./challenges.js";
 import { enableDurableStoreDefault, resolveStoreBackend, resolveStorePath } from "./store.js";
 
 const host = process.env.AGENTKEY_API_HOST ?? "127.0.0.1";
@@ -81,6 +82,17 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   try {
     if (req.method === "GET" && pathname === "/health") {
       sendJson(res, 200, { ok: true, service: "agentkey-api" });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/v1/challenges") {
+      const body = (await readJson(req)) as { purpose?: unknown };
+      const purpose = body.purpose ?? "verify";
+      if (!isChallengePurpose(purpose)) {
+        sendJson(res, 400, { error: "purpose must be verify, revoke or resolve" });
+        return;
+      }
+      sendJson(res, 201, issueChallenge(purpose));
       return;
     }
 

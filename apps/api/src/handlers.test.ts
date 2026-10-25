@@ -9,6 +9,7 @@ import {
   resolveAgent,
   revokeAgentIdentity,
   verifyAgent,
+  issueChallenge,
 } from "./handlers.js";
 import { clearStoreForTests } from "./store.js";
 import { resetIssuerKeysForTests, setIssuerKeysForTests } from "./issuer.js";
@@ -66,7 +67,7 @@ describe("api handlers", () => {
     });
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "private-read",
+      challenge: issueChallenge("resolve").challenge,
       privateKey: keys.privateKey,
     });
     const privateView = resolveAgent({
@@ -89,7 +90,7 @@ describe("api handlers", () => {
     });
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "private-read",
+      challenge: issueChallenge("resolve").challenge,
       privateKey: other.privateKey,
     });
     const denied = resolveAgent({
@@ -142,7 +143,7 @@ describe("api handlers", () => {
     });
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "third-party-challenge",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const result = verifyAgent({ agentId: issued.id, proof });
@@ -176,7 +177,7 @@ describe("api handlers", () => {
     });
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "c",
+      challenge: issueChallenge("verify").challenge,
       privateKey: other.privateKey,
     });
     const result = verifyAgent({ agentId: issued.id, proof });
@@ -187,7 +188,7 @@ describe("api handlers", () => {
     const keys = generateKeyPair();
     const proof = createOwnershipProof({
       agentId: "ak_does_not_exist",
-      challenge: "c",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const result = verifyAgent({ agentId: "ak_does_not_exist", proof });
@@ -221,7 +222,7 @@ describe("api handlers", () => {
     });
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "revoke",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: other.privateKey,
     });
     const denied = await revokeAgentIdentity({
@@ -238,7 +239,7 @@ describe("api handlers", () => {
     const keys = generateKeyPair();
     const proof = createOwnershipProof({
       agentId: "ak_does_not_exist",
-      challenge: "revoke",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const denied = await revokeAgentIdentity({
@@ -269,7 +270,7 @@ describe("api handlers", () => {
     });
     const revokeProof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "revoke-now",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const revoked = await revokeAgentIdentity({
@@ -283,7 +284,7 @@ describe("api handlers", () => {
     }
     const proof = createOwnershipProof({
       agentId: issued.id,
-      challenge: "c",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const result = verifyAgent({ agentId: issued.id, proof });
@@ -334,5 +335,76 @@ describe("api handlers", () => {
         }),
       /AGENTKEY_ANCHOR_ENABLED|registry/,
     );
+  });
+  describe("replay protection", () => {
+    async function setup() {
+      const keys = generateKeyPair();
+      const agent = await issueAgent({
+        publicHandle: `replay-${Date.now()}-${Math.random()}`,
+        publicKey: keys.publicKey,
+      });
+      const sign = (challenge: string) =>
+        createOwnershipProof({
+          agentId: agent.id,
+          challenge,
+          privateKey: keys.privateKey,
+        });
+      return { agent, sign };
+    }
+
+    it("a proof works once; replaying it is invalid", async () => {
+      const { agent, sign } = await setup();
+      const proof = sign(issueChallenge("verify").challenge);
+      assert.equal(verifyAgent({ agentId: agent.id, proof }).status, "valid");
+      const replay = verifyAgent({ agentId: agent.id, proof });
+      assert.equal(replay.status, "invalid");
+      assert.match(replay.reason ?? "", /unknown or already used/);
+    });
+
+    it("self-chosen challenge without expectedChallenge is invalid", async () => {
+      const { agent, sign } = await setup();
+      const result = verifyAgent({ agentId: agent.id, proof: sign("login-1") });
+      assert.equal(result.status, "invalid");
+    });
+
+    it("verifier-chosen expectedChallenge: match is valid, mismatch is invalid", async () => {
+      const { agent, sign } = await setup();
+      const proof = sign("rp-session-42");
+      assert.equal(
+        verifyAgent({ agentId: agent.id, proof, expectedChallenge: "rp-session-42" }).status,
+        "valid",
+      );
+      const other = verifyAgent({ agentId: agent.id, proof, expectedChallenge: "rp-session-43" });
+      assert.deepEqual(other, { status: "invalid", reason: "challenge mismatch" });
+    });
+
+    it("a bad signature does not use up the challenge", async () => {
+      const { agent, sign } = await setup();
+      const { challenge } = issueChallenge("verify");
+      const forged = createOwnershipProof({
+        agentId: agent.id,
+        challenge,
+        privateKey: generateKeyPair().privateKey,
+      });
+      assert.equal(verifyAgent({ agentId: agent.id, proof: forged }).status, "invalid");
+      assert.equal(verifyAgent({ agentId: agent.id, proof: sign(challenge) }).status, "valid");
+    });
+
+    it("a login (verify) proof cannot revoke the agent", async () => {
+      const { agent, sign } = await setup();
+      const loginProof = sign(issueChallenge("verify").challenge);
+      const result = await revokeAgentIdentity({ idOrHandle: agent.id, proof: loginProof });
+      assert.ok("error" in result);
+      if ("error" in result) assert.equal(result.error, "forbidden");
+    });
+
+    it("a private-subject read proof cannot be replayed", async () => {
+      const { agent, sign } = await setup();
+      const proof = sign(issueChallenge("resolve").challenge);
+      const first = resolveAgent({ idOrHandle: agent.id, includePrivateSubject: true, proof });
+      assert.ok(!("error" in first));
+      const again = resolveAgent({ idOrHandle: agent.id, includePrivateSubject: true, proof });
+      assert.ok("error" in again);
+    });
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   ROOT_ISSUER_ID,
   failClosed,
+  parseOwnershipProof,
   type AgentId,
   type IssueRequest,
   type ResolveRequest,
@@ -19,9 +20,16 @@ import {
   type AuthzCredentials,
   type AuthzErrorCode,
 } from "./authz.js";
+import {
+  checkChallenge,
+  consumeChallenge,
+  isServerChallenge,
+} from "./challenges.js";
 import { getAgent, putAgent, revokeAgent, type StoredAgent } from "./store.js";
 import { commitAnchor, revokeAnchor } from "./registry.js";
 import { getIssuerKeys } from "./issuer.js";
+
+export { issueChallenge, resetChallenges } from "./challenges.js";
 
 export type HandlerError = {
   error: AuthzErrorCode | "not_found";
@@ -96,6 +104,7 @@ export function resolveAgent(
 
   const proof = request.proof ?? credentials.proof;
   const creds: AuthzCredentials = {
+    purpose: "resolve",
     ...(credentials.bearerToken !== undefined
       ? { bearerToken: credentials.bearerToken }
       : {}),
@@ -122,6 +131,59 @@ export function verifyAgent(request: VerifyRequest): VerifyResult {
         issuerPublicKey: getIssuerKeys().publicKey,
       });
     }
+    const result = verifySignedProof(request, agent);
+    if (result.status !== "valid") {
+      return result;
+    }
+    return checkFreshness(request);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "verify failed";
+    return failClosed(message);
+  }
+}
+
+/**
+ * Replay protection, applied once the signature checks out.
+ * - `expectedChallenge` set: the proof must sign exactly that value.
+ * - challenge from `POST /v1/challenges`: must be unexpired, unused and issued
+ *   for verify; it is used up here so the same proof never passes twice.
+ * - anything else is a self-chosen challenge nobody vouches for: rejected.
+ */
+function checkFreshness(request: VerifyRequest): VerifyResult {
+  const parsed = parseOwnershipProof(request.proof);
+  if ("error" in parsed) {
+    return failClosed(parsed.error);
+  }
+  const { challenge } = parsed;
+  if (
+    request.expectedChallenge !== undefined &&
+    challenge !== request.expectedChallenge
+  ) {
+    return { status: "invalid", reason: "challenge mismatch" };
+  }
+  if (isServerChallenge(challenge)) {
+    const fresh = checkChallenge(challenge, "verify");
+    if (!fresh.ok) {
+      return { status: "invalid", reason: fresh.reason };
+    }
+    consumeChallenge(challenge);
+    return { status: "valid" };
+  }
+  if (request.expectedChallenge === undefined) {
+    return {
+      status: "invalid",
+      reason:
+        "challenge not vouched for: sign a one-time challenge from POST /v1/challenges, or pass expectedChallenge",
+    };
+  }
+  return { status: "valid" };
+}
+
+function verifySignedProof(
+  request: VerifyRequest,
+  agent: StoredAgent,
+): VerifyResult {
+  try {
     return verifyProof(
       request,
       {
@@ -169,6 +231,7 @@ export async function revokeAgentIdentity(
 
   const proof = request.proof ?? credentials.proof;
   const creds: AuthzCredentials = {
+    purpose: "revoke",
     ...(credentials.bearerToken !== undefined
       ? { bearerToken: credentials.bearerToken }
       : {}),

@@ -1,5 +1,7 @@
 import type {
   AgentId,
+  ChallengePurpose,
+  ChallengeResponse,
   IssueRequest,
   ResolveRequest,
   RevokeRequest,
@@ -9,6 +11,7 @@ import type {
 import { failClosed } from "@agentkey/protocol";
 import {
   issueAgent,
+  issueChallenge,
   resolveAgent,
   revokeAgentIdentity,
   verifyAgent,
@@ -16,13 +19,14 @@ import {
 
 /**
  * MCP tool surface — same capabilities as HTTP:
- * agentkey_issue | agentkey_resolve | agentkey_verify | agentkey_revoke
+ * agentkey_challenge | agentkey_issue | agentkey_resolve | agentkey_verify | agentkey_revoke
  *
  * Privileged ops (revoke, private-subject resolve) require ownership `proof`
  * and/or issuer admin bearer (`adminToken` / env AGENTKEY_ISSUER_ADMIN_TOKEN).
  */
 
 export type McpToolName =
+  | "agentkey_challenge"
   | "agentkey_issue"
   | "agentkey_resolve"
   | "agentkey_verify"
@@ -34,6 +38,11 @@ export interface McpToolDescriptor {
 }
 
 export const TOOLS: McpToolDescriptor[] = [
+  {
+    name: "agentkey_challenge",
+    description:
+      "Get a one-time challenge (5 min, single use) for an agent to sign; purpose: verify | revoke | resolve",
+  },
   {
     name: "agentkey_issue",
     description: "Register/issue an Agent ID under the Agentkey root issuer",
@@ -53,6 +62,17 @@ export const TOOLS: McpToolDescriptor[] = [
       "Revoke an Agent ID (requires ownership proof or issuer admin); subsequent verify → revoked",
   },
 ];
+
+export function agentkeyChallenge(input: {
+  purpose?: ChallengePurpose;
+}): { ok: true; challenge: ChallengeResponse } | { ok: false; error: string } {
+  try {
+    return { ok: true, challenge: issueChallenge(input.purpose ?? "verify") };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "challenge failed";
+    return { ok: false, error: message };
+  }
+}
 
 export async function agentkeyIssue(
   input: Partial<IssueRequest>,
@@ -114,6 +134,9 @@ export function agentkeyVerify(input: Partial<VerifyRequest>): VerifyResult {
     return verifyAgent({
       agentId: input.agentId,
       proof: input.proof,
+      ...(input.expectedChallenge !== undefined
+        ? { expectedChallenge: input.expectedChallenge }
+        : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
     });
   } catch (err) {
@@ -157,6 +180,8 @@ export async function invokeTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name) {
+    case "agentkey_challenge":
+      return agentkeyChallenge(args as { purpose?: ChallengePurpose });
     case "agentkey_issue":
       return agentkeyIssue(args as Partial<IssueRequest>);
     case "agentkey_resolve":

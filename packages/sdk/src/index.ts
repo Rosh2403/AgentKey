@@ -1,5 +1,7 @@
 import type {
   AgentId,
+  ChallengePurpose,
+  ChallengeResponse,
   IssueRequest,
   ResolveRequest,
   RevokeRequest,
@@ -46,6 +48,14 @@ export class AgentkeyClient {
       extra["x-agentkey-proof"] = request.proof;
     }
     return this.getJson<AgentId>(path, extra);
+  }
+
+  /**
+   * Get a one-time challenge for the agent to sign. Expires in ~5 minutes and
+   * works once, for one purpose (`verify`, `revoke` or `resolve`).
+   */
+  async challenge(purpose: ChallengePurpose = "verify"): Promise<ChallengeResponse> {
+    return this.postJson<ChallengeResponse>("/v1/challenges", { purpose });
   }
 
   async verify(request: VerifyRequest): Promise<VerifyResult> {
@@ -128,6 +138,8 @@ export const agentKeys = {
 
 export type {
   AgentId,
+  ChallengePurpose,
+  ChallengeResponse,
   IssueRequest,
   ResolveRequest,
   RevokeRequest,

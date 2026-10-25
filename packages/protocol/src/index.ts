@@ -103,7 +103,41 @@ export interface VerifyRequest {
   agentId: string;
   /** JSON-encoded OwnershipProof (challenge + signature). */
   proof: string;
+  /**
+   * Challenge the verifier handed to the agent. When set, the proof must be
+   * signed over exactly this value (stops a proof made for someone else from
+   * being replayed to you). Leave unset only when the agent signed a fresh
+   * one-time challenge from `POST /v1/challenges`.
+   */
+  expectedChallenge?: string;
   context?: Record<string, unknown>;
+}
+
+/**
+ * What a one-time challenge may be used for. A challenge issued for `verify`
+ * cannot authorize a `revoke`, so handing someone a login proof never lets
+ * them revoke your agent.
+ */
+export type ChallengePurpose = "verify" | "revoke" | "resolve";
+
+export const CHALLENGE_PURPOSES: readonly ChallengePurpose[] = [
+  "verify",
+  "revoke",
+  "resolve",
+];
+
+/** Prefix for server-issued one-time challenges. */
+export const CHALLENGE_PREFIX = "akc_";
+
+export interface ChallengeRequest {
+  purpose?: ChallengePurpose;
+}
+
+export interface ChallengeResponse {
+  challenge: string;
+  purpose: ChallengePurpose;
+  /** ISO time after which the challenge is rejected. */
+  expiresAt: string;
 }
 
 /** Fail-closed helper: any unexpected condition becomes `error`. */

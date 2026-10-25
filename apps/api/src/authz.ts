@@ -2,7 +2,13 @@ import { timingSafeEqual } from "node:crypto";
 import {
   canonicalVerifyMessage,
   parseOwnershipProof,
+  type ChallengePurpose,
 } from "@agentkey/protocol";
+import {
+  checkChallenge,
+  consumeChallenge,
+  isServerChallenge,
+} from "./challenges.js";
 import { isValidPublicKeyHex, verifySignature } from "@agentkey/crypto";
 import type { StoredAgent } from "./store.js";
 
@@ -29,6 +35,8 @@ export interface AuthzCredentials {
   proof?: string;
   /** Bearer token from Authorization header (issuer admin, when enabled). */
   bearerToken?: string;
+  /** What the proof's one-time challenge must have been issued for. */
+  purpose?: ChallengePurpose;
 }
 
 function safeEqualString(a: string, b: string): boolean {
@@ -43,11 +51,14 @@ function safeEqualString(a: string, b: string): boolean {
 /**
  * Prove subject control of an agent id (status-agnostic).
  * Used for revoke / private-subject authz — not the public verify enum path.
+ * The proof must sign a fresh one-time challenge issued for `purpose`
+ * (`POST /v1/challenges`); it is used up on success so it can't be replayed.
  */
 export function proveSubjectControl(input: {
   agentId: string;
   publicKey: string;
   proof: string;
+  purpose: ChallengePurpose;
 }): { ok: true } | { ok: false; reason: string } {
   if (!input.proof?.trim()) {
     return { ok: false, reason: "missing proof" };
@@ -56,6 +67,16 @@ export function proveSubjectControl(input: {
   if ("error" in parsed) {
     return { ok: false, reason: parsed.error };
   }
+  if (!isServerChallenge(parsed.challenge)) {
+    return {
+      ok: false,
+      reason: `proof must sign a one-time challenge from POST /v1/challenges (purpose: ${input.purpose})`,
+    };
+  }
+  const fresh = checkChallenge(parsed.challenge, input.purpose);
+  if (!fresh.ok) {
+    return fresh;
+  }
   if (!isValidPublicKeyHex(input.publicKey)) {
     return { ok: false, reason: "resolved agent has invalid public key" };
   }
@@ -63,6 +84,7 @@ export function proveSubjectControl(input: {
   if (!verifySignature(message, parsed.signature, input.publicKey)) {
     return { ok: false, reason: "signature verification failed" };
   }
+  consumeChallenge(parsed.challenge);
   return { ok: true };
 }
 
@@ -94,6 +116,7 @@ export function authorizeAgentControl(
       agentId: agent.id,
       publicKey: agent.publicKey,
       proof,
+      purpose: credentials.purpose ?? "revoke",
     });
     if (owned.ok) {
       return { ok: true, via: "ownership" };

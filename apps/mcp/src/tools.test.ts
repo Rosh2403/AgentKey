@@ -5,6 +5,7 @@ import {
   generateKeyPair,
 } from "@agentkey/crypto";
 import { clearStoreForTests } from "@agentkey/api/store";
+import { issueChallenge } from "@agentkey/api/handlers";
 import {
   resetIssuerKeysForTests,
   setIssuerKeysForTests,
@@ -49,7 +50,7 @@ describe("mcp tools", () => {
 
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "mcp-challenge",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const verdict = agentkeyVerify({
@@ -89,7 +90,7 @@ describe("mcp tools", () => {
 
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "private",
+      challenge: issueChallenge("resolve").challenge,
       privateKey: keys.privateKey,
     });
     const resolved = agentkeyResolve({
@@ -130,7 +131,7 @@ describe("mcp tools", () => {
 
     const revokeProof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "mcp-revoke",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const revoked = await agentkeyRevoke({
@@ -144,7 +145,7 @@ describe("mcp tools", () => {
 
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "after-revoke",
+      challenge: issueChallenge("verify").challenge,
       privateKey: keys.privateKey,
     });
     const verdict = agentkeyVerify({
@@ -171,7 +172,7 @@ describe("mcp tools", () => {
     if (!issued.ok) return;
     const proof = createOwnershipProof({
       agentId: issued.agent.id,
-      challenge: "invoke-revoke",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const result = (await invokeTool("agentkey_revoke", {

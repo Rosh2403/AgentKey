@@ -11,6 +11,7 @@ import {
   resolveIssuerAdminToken,
 } from "./authz.js";
 import type { StoredAgent } from "./store.js";
+import { issueChallenge } from "./challenges.js";
 
 function sampleAgent(publicKey: string): StoredAgent {
   return {
@@ -47,13 +48,14 @@ describe("authz", () => {
     const keys = generateKeyPair();
     const proof = createOwnershipProof({
       agentId: "ak_authz_demo",
-      challenge: "revoke-1",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const ok = proveSubjectControl({
       agentId: "ak_authz_demo",
       publicKey: keys.publicKey,
       proof,
+      purpose: "revoke",
     });
     assert.equal(ok.ok, true);
   });
@@ -63,7 +65,7 @@ describe("authz", () => {
     const agent = sampleAgent(keys.publicKey);
     const proof = createOwnershipProof({
       agentId: agent.id,
-      challenge: "c",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: keys.privateKey,
     });
     const decision = authorizeAgentControl(agent, { proof }, {});
@@ -77,7 +79,7 @@ describe("authz", () => {
     const agent = sampleAgent(keys.publicKey);
     const proof = createOwnershipProof({
       agentId: agent.id,
-      challenge: "c",
+      challenge: issueChallenge("revoke").challenge,
       privateKey: other.privateKey,
     });
     const decision = authorizeAgentControl(agent, { proof }, {});

@@ -58,7 +58,8 @@ async function main(): Promise<void> {
   });
 
   // --- Agent proves control; third party verifies ---
-  const challenge = `verify-${Date.now()}`;
+  // One-time challenge: expires in 5 min and works once (replay protection).
+  const { challenge } = await client.challenge("verify");
   const proof = agentKeys.createProof({
     agentId: agent.id,
     challenge,

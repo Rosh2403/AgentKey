@@ -21,6 +21,7 @@ Off-chain store and optional on-chain registry/anchor sit behind the issuer proc
 ## What is protected
 
 - **Ownership verify** — Subject signs `agentkey-verify-v1\n{agentId}\n{challenge}`; server checks signature against the stored pubkey (and issuer attestation when present). Malformed proofs → `error` (HTTP 400). Fail closed.
+- **Replay** — The challenge must be a one-time value from `POST /v1/challenges` (random, 5-minute TTL, accepted once, bound to one purpose: `verify`, `revoke` or `resolve`) **or** a verifier-chosen value passed as `expectedChallenge`. Replayed, expired, unknown or self-chosen challenges → `invalid`. A failed signature does not use up the challenge. Because challenges are purpose-bound, a proof handed to a relying party for login can never revoke the agent or read its private subject.
 - **Revoke** — Requires proof of control of the subject key (same ownership proof wire format) **or** an explicitly enabled issuer-admin bearer token. Unauthenticated revoke → **401**; bad proof → **403**; unknown agent (with credentials) → **404**.
 - **Private subject** — Dual-ID model: public resolve never includes `privateSubject`. `includePrivateSubject=true` requires the same ownership proof or issuer admin; without it the request is **denied** (401/403) and private data is never returned. Issue response still returns `privateSubject` to the registrant.
 - **Secrets hygiene** — Issuer and subject private keys are not returned from public resolve; `.env.example` is placeholders only; no secrets in git.
@@ -29,7 +30,8 @@ Off-chain store and optional on-chain registry/anchor sit behind the issuer proc
 
 - **Issue** is not gated by end-user auth in this prototype (anyone who can reach the API can register a new handle with their own pubkey).
 - **Public resolve** exposes `id`, `publicHandle`, `publicKey`, status, and attestation metadata — intentional for discovery/verify.
-- **Challenge freshness / replay** — Ownership proofs are not bound to server-issued nonces or TTLs yet; a captured proof could be replayed until keys rotate or the id is revoked.
+- **Relay to another verifier** — A malicious relying party could forward a proof it received to a *different* verifier before using it. Verifiers that pass their own `expectedChallenge` (or request the challenge themselves) are immune; others rely on the 5-minute TTL.
+- **Challenge store is in memory** — Single-instance only. Several API instances need a shared store (e.g. Redis) behind `apps/api/src/challenges.ts`; restarting the API drops outstanding challenges (safe: they just fail).
 - **Transport security** — Local demos often use plain HTTP; production must terminate TLS and restrict network exposure.
 - **CORS `*`** — Suitable for local dashboard demos; not a production browser hardening posture.
 - **MCP process trust** — MCP tools call the same handlers in-process; tool callers with the subject private key (or admin token) inherit those privileges.
@@ -38,7 +40,7 @@ Off-chain store and optional on-chain registry/anchor sit behind the issuer proc
 
 Privileged operations share one fail-closed check:
 
-1. **Ownership proof (preferred)** — JSON `{ challenge, signature }` over the canonical verify message for the **canonical agent id** (not merely the public handle), signed by the registered subject key.
+1. **Ownership proof (preferred)** — JSON `{ challenge, signature }` over the canonical verify message for the **canonical agent id** (not merely the public handle), signed by the registered subject key. The challenge must be a fresh one from `POST /v1/challenges` issued for `revoke` (or `resolve` for private-subject reads); it is used up on success.
 2. **Issuer admin (optional, off by default)** — `Authorization: Bearer <token>` where the token equals `AGENTKEY_ISSUER_ADMIN_TOKEN`. If that env var is unset or blank, the admin path is **disabled** (correct for public demos). Wrong token → **403** when the admin path is enabled; bare bearer with admin disabled does not authorize.
 
 | Operation | No credentials | Wrong key | Valid ownership / admin |

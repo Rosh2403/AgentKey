@@ -4,13 +4,13 @@ import {
   apiBaseUrl,
   checkHealth,
   issueAgent,
+  requestChallenge,
   resolveAgent,
   verifyAgent,
 } from "./api.js";
 import {
   createOwnershipProof,
   generateKeyPair,
-  randomChallenge,
 } from "./browser-keys.js";
 
 type VerifyMode = "paste" | "challenge";
@@ -141,7 +141,17 @@ const issueResult = mustEl<HTMLElement>("#issue-result");
 const apiDot = mustEl<HTMLElement>("#api-dot");
 const apiLabel = mustEl<HTMLElement>("#api-label");
 
-challengeInput.value = randomChallenge();
+/** Fresh one-time challenge from the API (each one works once, for 5 min). */
+async function refreshChallenge(): Promise<void> {
+  try {
+    challengeInput.value = await requestChallenge("verify");
+  } catch {
+    challengeInput.value = "";
+    challengeInput.placeholder = "API offline: start it to get a challenge";
+  }
+}
+
+void refreshChallenge();
 
 document.querySelectorAll<HTMLButtonElement>(".mode-tab").forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -156,7 +166,7 @@ document.querySelectorAll<HTMLButtonElement>(".mode-tab").forEach((tab) => {
 });
 
 mustEl<HTMLButtonElement>("#new-challenge").addEventListener("click", () => {
-  challengeInput.value = randomChallenge();
+  void refreshChallenge();
 });
 
 localMode.addEventListener("change", () => {
@@ -214,6 +224,10 @@ verifyForm.addEventListener("submit", (event) => {
     }
     const result = await verifyAgent({ agentId, proof });
     renderVerifyResult(result);
+    // The challenge is used up once a proof over it passes.
+    if (verifyMode === "challenge" && result.status === "valid") {
+      void refreshChallenge();
+    }
   })();
 });
 
